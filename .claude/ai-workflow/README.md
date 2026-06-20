@@ -1,6 +1,9 @@
-# <org> AI Workflow（自包含工具集）
+# AI Workflow（自包含工具集）
 
 把工单（JIRA / Linear）**事件驱动**地自动跑成 GitHub Issue → 实装 → PR 的 AI 协作工具集。
+
+> 工具集**技术栈无关**：接收器/路由/工单源（JIRA `JIRA_ID_PATTERN` 或 Linear）均可配；C 阶段构建/测试命令由 `issue-to-pr` 读目标仓 `CLAUDE.md`/`Makefile`/`package.json` 判定。
+> `guidelines/` 与部分 `dev-*` 命令内含 **<org>/Go 默认样例**，`install-into.sh` 默认**不覆盖**目标仓已有同名规约；非 Go 栈按需裁剪。
 单元 = `.claude/skills/jira-to-issue`（B）+ `.claude/commands/issue-to-pr`（C）+ `.claude/ai-workflow/`（本目录：JIRA/Linear 客户端 / Slack / 接收器 / 安装脚本 / 文档）。
 
 ```
@@ -20,11 +23,12 @@ Linear issue 打「AI处理」 ─webhook→ 接收器 → 跑 B → GitHub Issu
 git clone git@github.com:ryuclub/ai-workflow.git
 cd ai-workflow
 
-# 1. 配置（幂等）：依赖检查 + 建标签 + 生成/填 .env + 验证（含 go build / docker 检测）
+# 1. 配置（幂等）：依赖检查 + 建标签 + 生成/填 .env + 验证（构建检测按目标仓技术栈，非 Go 不报错）
 .claude/ai-workflow/setup.sh
-#   - 自动生成 GITHUB_WEBHOOK_SECRET / JIRA_WEBHOOK_TOKEN
-#   - JIRA 凭据：若 ~/work/<org>/<repo>/.claude/config/claude.env 存在会自动合入；
-#     否则手动把 ATLASSIAN_USERNAME/API_KEY/DOMAIN、JIRA_PROJECT 加到 .claude/ai-workflow/.env
+#   - 自动生成 GITHUB_WEBHOOK_SECRET / JIRA_WEBHOOK_TOKEN / LINEAR_WEBHOOK_SECRET
+#   - JIRA 凭据（可选）：设 JIRA_ENV_SRC=<某 .env 路径> 可自动合入；否则手动把
+#     ATLASSIAN_USERNAME/API_KEY/DOMAIN、JIRA_PROJECT 加到 .claude/ai-workflow/.env
+#   - Linear 凭据（可选）：把 LINEAR_API_KEY 加到同一 .env
 #   - Slack：把 SLACK_WEBHOOK_URL 加到同一 .env
 
 # 2. 固定具名隧道 + 服务化（开机自启），见 docs/ai-workflow-setup.md 第 7 节

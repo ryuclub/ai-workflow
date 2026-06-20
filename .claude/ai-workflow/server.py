@@ -42,6 +42,9 @@ CLAUDE_BIN = ENV.get("CLAUDE_BIN", "claude")
 WORKTREE_BASE = ENV.get("WORKTREE_BASE", "/tmp/wf-worktrees")
 APPROVED_LABEL = ENV.get("APPROVED_LABEL", "已审核")
 JIRA_TRIGGER_STATUS = ENV.get("JIRA_TRIGGER_STATUS", "待AI处理")
+# 工单号格式校验（与 Linear 对称，不写死某项目前缀）。默认接受任意项目键 ABC-123；
+# 如需收窄到单项目，设 JIRA_ID_PATTERN=^PROJ-\d+$ 之类。
+JIRA_ID_PATTERN = ENV.get("JIRA_ID_PATTERN", r"^[A-Z][A-Z0-9]+-\d+$")
 GITHUB_WEBHOOK_SECRET = ENV.get("GITHUB_WEBHOOK_SECRET", "")
 JIRA_WEBHOOK_TOKEN = ENV.get("JIRA_WEBHOOK_TOKEN", "")
 LINEAR_WEBHOOK_SECRET = ENV.get("LINEAR_WEBHOOK_SECRET", "")
@@ -330,7 +333,7 @@ class H(BaseHTTPRequestHandler):
             log(f"JIRA: 重复事件 {key}:{status}（{SEEN_TTL}s 内防抖），丢弃")
             slack(f"🔁 JIRA 重复事件 {key}（{status}，{SEEN_TTL}s 内防抖，已丢弃）")
             return self._r(200, "dup")
-        if not (key and re.match(r"^PROJ-\d+$", key) and status == JIRA_TRIGGER_STATUS):
+        if not (key and re.match(JIRA_ID_PATTERN, key) and status == JIRA_TRIGGER_STATUS):
             return self._r(200, "ignored")
         # 读标题路由到目标仓
         summary = jira_get(key).get("summary", "")
