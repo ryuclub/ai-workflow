@@ -37,20 +37,31 @@ if gh auth status >/dev/null 2>&1; then ok "gh 已登录"; else err "gh 未登�
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 ok "目标仓库：$REPO"
 
-# C（实装）所需 —— 缺只警告（B 不受影响），但安装机应全绿
-printf '  \033[2m— C 实装环境 —\033[0m\n'
-if command -v go >/dev/null 2>&1; then
-  ok "go $(go version | awk '{print $3}')"
-  # 权威判定：能构建即证明 GOPRIVATE + 私有依赖拉取（SSH/HTTPS）都通；首次可能稍慢
-  if (cd "$ROOT" && go build ./... >/tmp/wf-gobuild.log 2>&1); then
-    ok "go build ./... 通过（私有依赖可拉、C 可构建）"
+# C（实装）所需 —— 缺只警告（B 不受影响）。按目标仓技术栈自动判定，不写死 Go。
+printf '  \033[2m— C 实装环境（按目标仓技术栈）—\033[0m\n'
+if [ -f "$ROOT/go.mod" ]; then
+  if command -v go >/dev/null 2>&1; then
+    ok "go $(go version | awk '{print $3}')"
+    # 权威判定：能构建即证明 GOPRIVATE + 私有依赖拉取（SSH/HTTPS）都通；首次可能稍慢
+    if (cd "$ROOT" && go build ./... >/tmp/wf-gobuild.log 2>&1); then
+      ok "go build ./... 通过（私有依赖可拉、C 可构建）"
+    else
+      warn "go build 失败 → C 实装会失败：看 /tmp/wf-gobuild.log（常见 GOPRIVATE / 私有仓凭据未配）"
+    fi
   else
-    warn "go build 失败 → C 实装会失败：看 /tmp/wf-gobuild.log（常见 GOPRIVATE / GitHub 私有仓凭据未配）"
+    warn "检测到 go.mod 但缺 go 工具链（C 实装/构建需要）"
+  fi
+elif [ -f "$ROOT/package.json" ]; then
+  PM=npm; [ -f "$ROOT/pnpm-lock.yaml" ] && PM=pnpm; [ -f "$ROOT/yarn.lock" ] && PM=yarn
+  if command -v "$PM" >/dev/null 2>&1; then
+    ok "JS/TS 项目（$PM）—— 构建/测试命令由 issue-to-pr 读目标仓 CLAUDE.md/Makefile/package.json 判定"
+  else
+    warn "检测到 package.json 但缺包管理器 $PM"
   fi
 else
-  warn "缺 go（C 实装/构建需要）"
+  warn "未识别 go.mod / package.json —— C 阶段构建/测试命令由 issue-to-pr 读目标仓 CLAUDE.md/Makefile 判定"
 fi
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then ok "docker 守护进程在（ita 测试）"; else warn "docker 不可用（ita testcontainers 测试会失败）"; fi
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then ok "docker 守护进程在（容器化测试可用）"; else warn "docker 不可用（如目标仓测试依赖容器会失败）"; fi
 
 # ── 2. GitHub 标签（幂等）────────────────────────────────────
 step "2. 创建状态标签"
@@ -86,16 +97,21 @@ else
   echo "      SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ"
 fi
 
-# ── 5. JIRA 凭据 ────────────────────────────────────────────
-step "5. JIRA 凭据"
-JIRA_SRC="${JIRA_ENV_SRC:-$HOME/work/MosaviJP/Mosavi-Channel-Service/.claude/config/claude.env}"
-if [ -z "$(getenv ATLASSIAN_API_KEY)" ] && [ -f "$JIRA_SRC" ]; then
-  grep -hE '^(ATLASSIAN_|JIRA_PROJECT)' "$JIRA_SRC" >> "$ENV_FILE" && ok "从 $JIRA_SRC 合入 JIRA 凭据"
+# ── 5. JIRA 凭据（可选入口；用 Linear 则可跳过）────────────────
+step "5. JIRA 凭据（可选）"
+# 仅当显式设了 JIRA_ENV_SRC 才从外部 .env 合入；不再默认指向某特定仓的 claude.env
+if [ -z "$(getenv ATLASSIAN_API_KEY)" ] && [ -n "${JIRA_ENV_SRC:-}" ] && [ -f "$JIRA_ENV_SRC" ]; then
+  grep -hE '^(ATLASSIAN_|JIRA_PROJECT)' "$JIRA_ENV_SRC" >> "$ENV_FILE" && ok "从 $JIRA_ENV_SRC 合入 JIRA 凭据"
 fi
 if [ -n "$(getenv ATLASSIAN_API_KEY)" ]; then
-  if python3 "$JIRA_API" get MOS-3245 2>/dev/null | grep -q '"key"'; then ok "JIRA 读取验证通过"; else warn "JIRA .env 在但读取失败，检查凭据/网络"; fi
+  JT="$(getenv JIRA_TEST_KEY)"   # 读取验证用的工单号，按项目自配；不写死
+  if [ -n "$JT" ]; then
+    if python3 "$JIRA_API" get "$JT" 2>/dev/null | grep -q '"key"'; then ok "JIRA 读取验证通过（$JT）"; else warn "JIRA .env 在但读取 $JT 失败，检查凭据/网络"; fi
+  else
+    ok "JIRA 凭据已配（设 JIRA_TEST_KEY=<工单号> 可启用读取验证）"
+  fi
 else
-  warn "缺 ATLASSIAN_* —— 加到 ${ENV_FILE}：ATLASSIAN_USERNAME/API_KEY/DOMAIN、JIRA_PROJECT=MOS"
+  warn "未配 JIRA（用 Linear 可忽略）—— 如用 JIRA：加 ATLASSIAN_USERNAME/API_KEY/DOMAIN、JIRA_PROJECT 到 ${ENV_FILE}"
 fi
 
 # ── 5b. Linear 凭据（可选入口）──────────────────────────────

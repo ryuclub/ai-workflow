@@ -20,17 +20,23 @@ echo
 TC="$TARGET/.claude"
 mkdir -p "$TC/skills" "$TC/commands" "$TC/guidelines" "$TC/hooks" "$TC/ai-workflow"
 
-# 1) 入口 skills（全量）
-cp -R "$SRC_ROOT/$SRC/skills/." "$TC/skills/"
+# 1) 入口 skills（引擎核心）。Go/Gin 专属 skill（gin-api-docs）默认跳过，WITH_GO_SKILLS=1 才装。
+for s in "$SRC_ROOT/$SRC/skills"/*/; do
+  name="$(basename "$s")"
+  if [ "$name" = "gin-api-docs" ] && [ "${WITH_GO_SKILLS:-0}" != "1" ]; then
+    echo "  ⊘ 跳过 Go 专属 skill: gin-api-docs（WITH_GO_SKILLS=1 可装）"; continue
+  fi
+  cp -R "$s" "$TC/skills/"
+done
 echo "✓ skills/        $(ls "$TC/skills" | tr '\n' ' ')"
 
-# 2) 编排命令（全量）
-cp -R "$SRC_ROOT/$SRC/commands/." "$TC/commands/"
-echo "✓ commands/      $(ls "$TC/commands" | wc -l | tr -d ' ') 个"
+# 2) 编排命令（不覆盖目标仓已有同名）
+cp -Rn "$SRC_ROOT/$SRC/commands/." "$TC/commands/" 2>/dev/null
+echo "✓ commands/      $(ls "$TC/commands" | wc -l | tr -d ' ') 个（已有同名保留不覆盖）"
 
-# 3) 规约（全量；目标仓可按需裁剪/覆写）
-cp -R "$SRC_ROOT/$SRC/guidelines/." "$TC/guidelines/"
-echo "✓ guidelines/    （Mosavi 规约，按目标项目裁剪）"
+# 3) 规约：**不覆盖**目标仓已有同名（其自有 guidelines 优先；仅补缺失的 Mosavi/Go 默认）
+cp -Rn "$SRC_ROOT/$SRC/guidelines/." "$TC/guidelines/" 2>/dev/null
+echo "✓ guidelines/    （目标仓已有同名保留不覆盖；新增的为 Mosavi/Go 默认，按本项目栈裁剪/删除）"
 
 # 4) 提交前审查钩子
 cp "$SRC_ROOT/$SRC/hooks/pre-commit-review.sh" "$TC/hooks/"

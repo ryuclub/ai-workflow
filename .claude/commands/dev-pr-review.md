@@ -8,7 +8,7 @@
 `$ARGUMENTS` 传入以下任一:
 
 - PR 号: `123`
-- PR URL: `https://github.com/MosaviJP/Mosavi-Channel-Service/pull/123`
+- PR URL: `https://github.com/{owner}/{repo}/pull/123`
 - 分支名: `feat/MOS-1234-add-user-auth`
 - 省略时: 审查当前分支的本地变更
 
@@ -28,15 +28,15 @@
 1. 从 `$ARGUMENTS` 判定审查对象:
    - PR 号/URL → `gh pr view {pr_number} --json title,body,headRefName,baseRefName,state` 获取信息
    - 分支名 → 该分支的 diff 为对象
-   - 省略时 → `git diff stage...HEAD` 的本地变更为对象
+   - 省略时 → `git diff <base>...HEAD` 的本地变更为对象（`<base>`=目标仓默认/base 分支）
 2. **分支 · 合并目标确认**:
-   - PR 时: 确认 `headRefName`（源）、`baseRefName`（合并目标，应为 `stage`）
-   - 分支时: 确认基础分支为 `stage`
-3. 从 PR 或分支名提取工单号（`MOS-XXXX`）
+   - PR 时: 确认 `headRefName`（源）、`baseRefName`（合并目标，按目标仓 `branch.md`/默认分支）
+   - 分支时: 确认基础分支（目标仓 `branch.md`/默认分支）
+3. 从 PR 或分支名提取工单号（如 `MOS-1234` / `SUM-12`，正则 `[A-Z][A-Z0-9]*-\d+`）
 4. **工单号存在时**: 用 `jira-manage-ticket` 技能获取工单信息，确认工单中的文档链接
 5. 获取 diff:
    - PR 指定时: `gh pr diff {pr_number}`
-   - 分支/本地: `git diff stage...HEAD`
+   - 分支/本地: `git diff <base>...HEAD`（`<base>`=目标仓默认/base 分支）
    - 大规模 diff 时: 按 service 层 > controller 层 > infra 层 > model 层 的优先级确认
 
 ### Step 2: 上下文收集
@@ -58,7 +58,7 @@
 1. **JIRA 一致性**: 与工单目的、成果物、完成条件的一致性
 2. **一致性**: 命名规则、错误码、错误处理、日志、Swagger 注释
 3. **代码质量**: 架构遵循、错误处理、DI、自动生成文件未编辑
-4. **Lint 验证**: `make lint`
+4. **Lint 验证**: 按目标仓技术栈（如 `make lint` / `pnpm lint` / `go vet ./...`）
 5. **通用质量**: 安全性、性能、测试覆盖
 6. **破坏性变更**: 函数签名变更的影响范围
 7. 各指摘注明「依据」（基于哪条规则/规约）
