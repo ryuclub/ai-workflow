@@ -1,0 +1,10 @@
+.env
+
+# claude-common 同步机制本地产物（由 hooks/init.sh 维护，嵌套 git 仓库 + 自动生成清单）
+.remote-cache/
+.remote-load.json
+
+# Claude Code skill 运行时锁文件（/loop / /schedule 等）
+scheduled_tasks.lock
+__pycache__/
+ai-workflow/config.json
