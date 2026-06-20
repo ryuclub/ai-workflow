@@ -55,9 +55,9 @@ bash .claude/ai-workflow/notify.sh "<消息>"
    gh issue view <N> --json number,title,body,labels,url
    ```
    - 校验含 `已审核` 标签；否则中止并报告（非本命令处理对象）。
-2. 从标题 `[PROJ-XXXX]` 提取工单号。
+2. 从标题 `[<工单号>]` 提取工单号。工单号通用格式 `[A-Z][A-Z0-9]*-\d+`，兼容 JIRA（`PROJ-1234`）与 Linear（`ENG-123`）；下文凡 `PROJ-XXXX` 均为占位，以实际工单号替换。
 3. **幂等检查**（防 /loop 重复触发）：
-   - 已存在 `*/PROJ-XXXX-*` 分支或关联 PR → 不重复开工，报告现状后退出。
+   - 已存在 `*/<工单号>-*` 分支或关联 PR → 不重复开工，报告现状后退出。
    - Issue 已带 `已实装` → 跳过。
 
 ### Phase 1：建分支

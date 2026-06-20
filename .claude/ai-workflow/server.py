@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""单例 webhook 接收器（多仓路由）：JIRA/GitHub 事件 → 目标仓 worktree 里跑 claude -p。
+"""单例 webhook 接收器（多仓路由）：JIRA/Linear/GitHub 事件 → 目标仓 worktree 里跑 claude -p。
 
 路由：
 - GitHub(C)：payload repository.full_name → config.repos 反查 → 该仓 path。
 - JIRA(B)：读票 summary（标题）按 config 各仓 match 关键词判定；1 命中→该仓，0→default，≥2→冲突 Slack 不派。
+- Linear(B)：issue 打触发标签 → 读票标题，同 JIRA 走 resolve_by_title 路由。
 配置见同目录 config.json（含本地路径 → gitignore）。
 """
 import hashlib
@@ -43,6 +44,9 @@ APPROVED_LABEL = ENV.get("APPROVED_LABEL", "已审核")
 JIRA_TRIGGER_STATUS = ENV.get("JIRA_TRIGGER_STATUS", "待AI处理")
 GITHUB_WEBHOOK_SECRET = ENV.get("GITHUB_WEBHOOK_SECRET", "")
 JIRA_WEBHOOK_TOKEN = ENV.get("JIRA_WEBHOOK_TOKEN", "")
+LINEAR_WEBHOOK_SECRET = ENV.get("LINEAR_WEBHOOK_SECRET", "")
+LINEAR_TRIGGER_LABEL = ENV.get("LINEAR_TRIGGER_LABEL", "AI处理")
+LINEAR_ID_PATTERN = ENV.get("LINEAR_ID_PATTERN", r"^[A-Z][A-Z0-9]+-\d+$")
 PORT = int(ENV.get("PORT", "8787"))
 
 
@@ -142,6 +146,17 @@ def jira_get(key):
         return json.loads(r.stdout)
     except Exception as e:
         log(f"jira_get 失败 {key}: {e}")
+        return {}
+
+
+def linear_get(key):
+    """receiver 用自带 linear_api 读票（取 summary + 权威 labels 做触发判定/路由）。"""
+    try:
+        r = subprocess.run(["python3", str(DIR / "linear_api.py"), "get", key],
+                           capture_output=True, text=True, timeout=30)
+        return json.loads(r.stdout)
+    except Exception as e:
+        log(f"linear_get 失败 {key}: {e}")
         return {}
 
 
@@ -258,6 +273,8 @@ class H(BaseHTTPRequestHandler):
             return self._gh(body)
         if self.path == "/jira":
             return self._jira(body)
+        if self.path == "/linear":
+            return self._linear(body)
         self._r(404)
 
     def _gh(self, body):
@@ -330,17 +347,67 @@ class H(BaseHTTPRequestHandler):
         dispatch(f"/jira-to-issue {key}", f"B-{key}", repo)
         self._r(202, "B")
 
+    def _linear(self, body):
+        if not LINEAR_WEBHOOK_SECRET:
+            slack_throttled("linear-no-secret", "⚠️ Linear webhook 到达但未配 LINEAR_WEBHOOK_SECRET，全部拒收（.env 缺失）")
+            return self._r(500, "no secret")
+        # Linear 用 HMAC-SHA256 十六进制（Linear-Signature，无 sha256= 前缀，与 GitHub 略异）
+        exp = hmac.new(LINEAR_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(self.headers.get("Linear-Signature", ""), exp):
+            slack_throttled("linear-bad-sig", "⚠️ Linear 验签失败，webhook 被拒——secret 可能漂移（合法事件正被静默丢弃）")
+            return self._r(401, "bad sig")
+        try:
+            pl = json.loads(body)
+        except Exception:
+            slack_throttled("linear-bad-json", "⚠️ Linear webhook body 非 JSON，已丢弃")
+            return self._r(400)
+        if pl.get("type") != "Issue":
+            return self._r(200, "ignored")
+        data = pl.get("data", {}) or {}
+        action = pl.get("action", "")
+        key = data.get("identifier", "")
+        if seen(f"{key}:{data.get('updatedAt') or action}"):
+            log(f"Linear: 重复事件 {key}（{SEEN_TTL}s 内防抖），丢弃")
+            slack(f"🔁 Linear 重复事件 {key}（{SEEN_TTL}s 内防抖，已丢弃）")
+            return self._r(200, "dup")
+        # 仅在「新建」或「标签发生变化的更新」事件上继续（无关字段更新不触发，省去无谓 API 读取）
+        uf = pl.get("updatedFrom") or {}
+        if action == "update" and not any(k in uf for k in ("labelIds", "labels")):
+            return self._r(200, "ignored")
+        if not (key and re.match(LINEAR_ID_PATTERN, key)):
+            return self._r(200, "ignored")
+        # webhook payload 不一定展开标签名 → 回查 API 取权威 labels + 标题
+        info = linear_get(key)
+        if LINEAR_TRIGGER_LABEL not in info.get("labels", []):
+            return self._r(200, "ignored")
+        summary = info.get("summary", "") or ""
+        repo, reason = resolve_by_title(summary)
+        if reason.startswith("conflict"):
+            log(f"{key} 标题路由冲突：{reason}")
+            slack(f"⚖️ {key} 标题命中多个仓（{reason}），无法判定路由 → 请人工指定，未派活\n标题：{summary}")
+            return self._r(200, "conflict")
+        if not repo:
+            slack(f"⚠️ {key} 无法路由（无默认仓），config.json 未配 default")
+            return self._r(200, "no repo")
+        log(f"[{repo['name']}] {key} → B（linear/{reason}）")
+        slack(f"📥 [{repo['name']}] 收到 {key}（Linear『{LINEAR_TRIGGER_LABEL}』，{reason}）→ 启动整理为 Issue (B)…")
+        dispatch(f"/jira-to-issue {key}", f"B-{key}", repo)
+        self._r(202, "B")
+
 
 if __name__ == "__main__":
     gh_on = "on" if GITHUB_WEBHOOK_SECRET else "OFF"
     jira_on = "on" if JIRA_WEBHOOK_TOKEN else "OFF"
+    linear_on = "on" if LINEAR_WEBHOOK_SECRET else "OFF"
     log(f"接收器 :{PORT}  默认仓={DEFAULT_REPO}  登记仓={list(REPOS)}  "
-        f"gh验签={gh_on} jira={jira_on}")
+        f"gh验签={gh_on} jira={jira_on} linear={linear_on}")
     warn = ""
     if not GITHUB_WEBHOOK_SECRET:
         warn += "  ⚠️gh验签OFF(GitHub事件将全拒)"
     if not JIRA_WEBHOOK_TOKEN:
         warn += "  ⚠️jira校验OFF(JIRA事件将全拒)"
+    if not LINEAR_WEBHOOK_SECRET:
+        warn += "  ⚠️linear验签OFF(Linear事件将全拒)"
     slack(f"🟢 接收器启动 :{PORT}  默认仓={DEFAULT_REPO}  登记仓={list(REPOS)}  "
           f"防抖TTL={SEEN_TTL}s{warn}")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

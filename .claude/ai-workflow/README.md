@@ -1,13 +1,15 @@
 # <org> AI Workflow（自包含工具集）
 
-把 JIRA 工单**事件驱动**地自动跑成 GitHub Issue → 实装 → PR 的 AI 协作工具集。
-单元 = `.claude/skills/jira-to-issue`（B）+ `.claude/commands/issue-to-pr`（C）+ `.claude/ai-workflow/`（本目录：JIRA 客户端 / Slack / 接收器 / 安装脚本 / 文档）。
+把工单（JIRA / Linear）**事件驱动**地自动跑成 GitHub Issue → 实装 → PR 的 AI 协作工具集。
+单元 = `.claude/skills/jira-to-issue`（B）+ `.claude/commands/issue-to-pr`（C）+ `.claude/ai-workflow/`（本目录：JIRA/Linear 客户端 / Slack / 接收器 / 安装脚本 / 文档）。
 
 ```
-JIRA 票打「AI处理」标签 ─webhook→ 接收器 → 跑 B → GitHub Issue + 待审核 → Slack
-人审 Issue 打「已审核」  ─webhook→ 接收器 → 跑 C → PR(Closes #N) + 已实装 → Slack
+JIRA 票打「AI处理」标签   ─webhook→ 接收器 → 跑 B → GitHub Issue + 待审核 → Slack
+Linear issue 打「AI处理」 ─webhook→ 接收器 → 跑 B → GitHub Issue + 待审核 → Slack
+人审 Issue 打「已审核」    ─webhook→ 接收器 → 跑 C → PR(Closes #N) + 已实装 → Slack
 人 review PR → 合并
 ```
+> 入口支持 **JIRA 与 Linear 双源并行**：JIRA 按触发状态触发、Linear 按触发标签触发，二者都读票标题走同一套多仓路由，落到同一个 `jira-to-issue`（B）。工单源由工单号前缀自动判定（`PROJ-`→JIRA，`ENG-` 等 `TEAM-数字`→Linear）。
 设计与完整手册见 [`docs/ai-workflow.md`](./docs/ai-workflow.md)、[`docs/ai-workflow-setup.md`](./docs/ai-workflow-setup.md)。
 
 ---
@@ -49,7 +51,7 @@ cd /path/to/目标仓
 .claude/ai-workflow/setup.sh                       # 填/生成 .env、建标签、验证
 git add .claude && git commit -m "chore: 接入 AI 工作流工具集"   # 必须提交：headless 在 worktree 跑，要能看到
 .claude/ai-workflow/setup.sh --serve               # 起接收器 + webhook（或 PUBLIC_URL=… 固定隧道）
-# 再在 JIRA 建 Automation 规则（条件含本仓的 repo: 标签）
+# 再在 JIRA 建 Automation 规则 和/或 Linear 建 Webhook（setup --serve 末尾会打印两者填写清单）
 ```
 
 > 现状：每个装了的仓**各跑一个接收器**（self-contained）。"单例接收器服务多仓 + 登记表路由"为后续增强。
@@ -59,8 +61,8 @@ git add .claude && git commit -m "chore: 接入 AI 工作流工具集"   # 必�
 ## ⚠️ 安全模型（务必理解）
 
 接收器本质是「外网 webhook → 本机 `claude -p --dangerously-skip-permissions`」= **远程代码执行面**。缓解：
-- **验签**：GitHub HMAC-SHA256（`X-Hub-Signature-256`）/ JIRA 共享 token（`X-Webhook-Token`）；密钥未配即 500 拒绝。
-- **固定命令面**：只派发 `/issue-to-pr <整数>`、`/jira-to-issue PROJ-<整数>`，参数正则校验。
+- **验签**：GitHub HMAC-SHA256（`X-Hub-Signature-256`）/ JIRA 共享 token（`X-Webhook-Token`）/ Linear HMAC-SHA256（`Linear-Signature`，无 `sha256=` 前缀）；密钥未配即 500 拒绝。
+- **固定命令面**：只派发 `/issue-to-pr <整数>`、`/jira-to-issue <工单号>`（工单号正则 `[A-Z][A-Z0-9]*-\d+`，覆盖 JIRA `PROJ-`/Linear `ENG-`）。
 - **隔离**：每任务独立 `git worktree`，跑完清理；运行时注入合并 `.env`。
 - **仅 127.0.0.1 监听**，只经隧道暴露。**去重**防重投。
 - 残留风险：AI 在 skip-permissions 下自身可能做预期外操作 —— 受控环境、可信网络运行。
