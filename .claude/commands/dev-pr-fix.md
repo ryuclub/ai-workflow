@@ -8,7 +8,7 @@
 `$ARGUMENTS` 传入以下任一:
 
 - PR 号: `123`
-- PR URL: `https://github.com/MosaviJP/Mosavi-Channel-Service/pull/123`
+- PR URL: `https://github.com/{owner}/{repo}/pull/123`
 - 省略时: 自动检测当前分支关联的 PR（`gh pr view --json number`）
 
 ## 参照文档
@@ -33,7 +33,7 @@
 6. **分支确认**:
    - `git branch --show-current` — 当前分支名
    - 确认当前分支与 PR 的 `headRefName` 一致（不一致时向用户确认）
-   - 确认 PR 的合并目标（`baseRefName`，应为 `stage`）
+   - 确认 PR 的合并目标（`baseRefName`，按目标仓 `branch.md`/默认分支）
    - `git log --oneline -5` — 最新提交
    - `git status` — 是否有未提交的变更
 
@@ -41,11 +41,11 @@
 
 1. 获取 PR 审查评论:
    ```bash
-   gh api repos/MosaviJP/Mosavi-Channel-Service/pulls/{pr_number}/comments
+   gh api repos/{owner}/{repo}/pulls/{pr_number}/comments
    ```
 2. 获取 PR Review（Approve/Request Changes）:
    ```bash
-   gh api repos/MosaviJP/Mosavi-Channel-Service/pulls/{pr_number}/reviews
+   gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews
    ```
 3. 参照工单文档和 `.claude/business-knowledge/` 下相关领域知识，理解指摘内容的背景和意图
 4. 对评论分类:
@@ -70,7 +70,7 @@
 每次循环:
 
 1. **实现**: 按重要度顺序修正（[must] → [should] → [nits]），记录与评论 ID 的关联
-2. **构建确认**: `make lint`
+2. **构建确认**: 按目标仓技术栈（读 `CLAUDE.md`/`Makefile`/`package.json`）；如 `make lint`、`pnpm lint`、`go vet ./...`
 3. **自查**: 用 `/dev-review` 同等视角委托 Agent(general-purpose)（确认原指摘已解消、与工单文档的一致性）
 4. 有指摘 → 自动修正后重新循环，无指摘 → 结束
 
@@ -88,7 +88,7 @@
 
 ### Phase 6: 测试执行循环
 
-1. 实现测试 → `go test -v ./internal/对象包/...` 执行
+1. 实现测试 → 按目标仓技术栈执行（如 `go test ./...`、`pnpm test`、`npm test`）
 2. 结果判定: 通过 → Phase 7，轻微问题 → 修正后重新执行，需方案变更 → 由用户判断
 3. 最多修正再执行 3 次
 
@@ -105,7 +105,7 @@
 3. `git push origin <分支名>`
 4. 回复审查评论（按 `workflow.md` 第 8 步的 API 方式）:
    ```bash
-   gh api repos/MosaviJP/Mosavi-Channel-Service/pulls/{pr_number}/comments \
+   gh api repos/{owner}/{repo}/pulls/{pr_number}/comments \
      -X POST -f body="<回复内容>" -F in_reply_to=<comment_id>
    ```
 5. 向用户报告完成
@@ -117,6 +117,4 @@
 
 ## 注意事项
 
-- 仓库: `MosaviJP/Mosavi-Channel-Service`
-- 基础分支: `stage`
-- Remote 名: `origin`
+- 仓库 / 基础分支 / Remote：按目标仓实际值（`gh repo view`、`branch.md`/默认分支、通常 `origin`），不写死。
