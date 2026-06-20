@@ -26,7 +26,9 @@ for s in "$SRC_ROOT/$SRC/skills"/*/; do
   if [ "$name" = "gin-api-docs" ] && [ "${WITH_GO_SKILLS:-0}" != "1" ]; then
     echo "  ⊘ 跳过 Go 专属 skill: gin-api-docs（WITH_GO_SKILLS=1 可装）"; continue
   fi
-  cp -R "$s" "$TC/skills/"
+  # 去掉 glob 的尾斜杠：`cp -R dir/ dest/` 拷的是内容，会把 skill 铺平进 skills/；
+  # `cp -R dir dest/` 才会保留 skill 目录本身。
+  cp -R "${s%/}" "$TC/skills/"
 done
 echo "✓ skills/        $(ls "$TC/skills" | tr '\n' ' ')"
 
