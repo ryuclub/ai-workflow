@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .claude/ai-workflow
 ROOT="$(cd "$HERE/../.." && pwd)"                       # 仓库根
 ENV_FILE="$HERE/.env"                                   # 自包含工具集的合并 .env（gitignore）
 JIRA_API="$HERE/jira_api.py"
+LINEAR_API="$HERE/linear_api.py"
 NOTIFY="$HERE/notify.sh"
 PORT=8787
 
@@ -65,11 +66,15 @@ touch "$ENV_FILE"
 setdefault GITHUB_WEBHOOK_SECRET "$(openssl rand -hex 32)"
 setdefault JIRA_WEBHOOK_TOKEN    "$(openssl rand -hex 32)"
 setdefault JIRA_TRIGGER_STATUS   "待AI处理"
+setdefault LINEAR_WEBHOOK_SECRET "$(openssl rand -hex 32)"
+setdefault LINEAR_TRIGGER_LABEL  "AI处理"
 setdefault APPROVED_LABEL        "已审核"
 setdefault PORT                  "$PORT"
 ok "$ENV_FILE 就绪（缺失的密钥已生成）"
 GH_SECRET="$(getenv GITHUB_WEBHOOK_SECRET)"
 JIRA_TOKEN="$(getenv JIRA_WEBHOOK_TOKEN)"
+LINEAR_SECRET="$(getenv LINEAR_WEBHOOK_SECRET)"
+LINEAR_LABEL="$(getenv LINEAR_TRIGGER_LABEL)"
 
 # ── 4. Slack ────────────────────────────────────────────────
 step "4. Slack 通知"
@@ -91,6 +96,21 @@ if [ -n "$(getenv ATLASSIAN_API_KEY)" ]; then
   if python3 "$JIRA_API" get MOS-3245 2>/dev/null | grep -q '"key"'; then ok "JIRA 读取验证通过"; else warn "JIRA .env 在但读取失败，检查凭据/网络"; fi
 else
   warn "缺 ATLASSIAN_* —— 加到 ${ENV_FILE}：ATLASSIAN_USERNAME/API_KEY/DOMAIN、JIRA_PROJECT=MOS"
+fi
+
+# ── 5b. Linear 凭据（可选入口）──────────────────────────────
+step "5b. Linear 凭据（可选）"
+if [ -n "$(getenv LINEAR_API_KEY)" ]; then
+  # viewer 查询验证 key 有效（不依赖具体工单号）
+  if curl -s -X POST https://api.linear.app/graphql \
+       -H "Authorization: $(getenv LINEAR_API_KEY)" -H "Content-Type: application/json" \
+       -d '{"query":"{ viewer { id } }"}' 2>/dev/null | grep -q '"id"'; then
+    ok "Linear 读取验证通过"
+  else
+    warn "LINEAR_API_KEY 在但验证失败，检查凭据/网络"
+  fi
+else
+  warn "缺 LINEAR_API_KEY（不接 Linear 可忽略）—— 加到 ${ENV_FILE}：LINEAR_API_KEY=lin_api_xxx"
 fi
 
 # ── 6. 配置完成 ─────────────────────────────────────────────
@@ -135,7 +155,7 @@ else
 fi
 
 # ── 9. 打印只能人工完成的部分 ───────────────────────────────
-step "✅ 自动部分完成 —— 以下需你在 JIRA 手动建规则"
+step "✅ 自动部分完成 —— 以下需你在 JIRA / Linear 手动建规则"
 cat <<EOF
   JIRA Automation（项目 MOS → ⚡ → Create rule）：
     Trigger   : 字段值已更改 → 字段 标签
@@ -146,6 +166,13 @@ cat <<EOF
       Body   : {"key":"{{issue.key}}","status":"待AI处理"}
     保存并打开规则。
 
-  ⚠️ 隧道 URL 是临时的，重启 cloudflared 会变，变了要更新上面 JIRA 规则的 URL
+  Linear Webhook（Settings → API → Webhooks → New webhook）：
+    URL          : $URL/linear
+    Signing secret: $LINEAR_SECRET   （填到本机 .env 的 LINEAR_WEBHOOK_SECRET，setup 已生成同串）
+    Resources    : 勾选 Issues
+    触发方式      : 给 issue 打标签「$LINEAR_LABEL」即触发（接收器回查 API 确认标签）
+    注：Linear 验签头为 Linear-Signature（HMAC-SHA256 十六进制，无前缀）。
+
+  ⚠️ 隧道 URL 是临时的，重启 cloudflared 会变，变了要更新上面 JIRA / Linear 规则的 URL
      （GitHub webhook 重跑 ./setup.sh --serve 会自动更新）。
 EOF
