@@ -1,7 +1,8 @@
 # AI 自动协作工作流（设计记录）
 
 > 状态：**设计中，未实装**。本文记录与人类收敛出的工作流模型，作为后续落地各「件」的依据。
-> 触发载体（最终）：**webhook 事件驱动** —— JIRA/GitHub webhook → 固定隧道 → **单例接收器**（多仓路由），非轮询。
+> 触发载体（最终）：**webhook 事件驱动** —— JIRA/Linear/GitHub webhook → 固定隧道 → **单例接收器**（多仓路由），非轮询。
+> 工单入口双源并行：**JIRA**（触发状态）与 **Linear**（触发标签）经各自端点进同一套标题路由，落到同一 `jira-to-issue`（B）。
 > base 分支：**项目无关**，C 运行时按目标仓 `branch.md`/默认分支判定，不写死。
 > （早期曾设想本地半自动 `/loop` 轮询；后改为事件驱动接收器。下文凡提 `/loop` 为历史，以本注为准。）
 
@@ -16,7 +17,7 @@
 
 | 层 | 工件 | 装什么 | 粒度 | 谁产出 | 谁消费 |
 |----|------|--------|------|--------|--------|
-| why | **JIRA 票** | 业务诉求、背景、为什么做 | 业务 | 人类（PM） | AI 调查输入 |
+| why | **工单（JIRA/Linear）** | 业务诉求、背景、为什么做 | 业务 | 人类（PM） | AI 调查输入 |
 | what | **GitHub Issue** | 做什么 + 实现方向 + 验收标准 | 粗（够人判断「该做吗 / 方向对吗」） | AI 调查分析 | **人类审核**（label 闸口） |
 | how | **需求文档** `design/changes/MOS-XXXX.md` | 逐文件 / 逐函数变更、实装顺序、风险 | 细（够 AI 照着敲代码） | AI（由 Issue 派生） | AI 实装指导；随 PR 顺带 review |
 | code | **代码 + 测试** | 实现 | — | AI | 人类 PR review |
@@ -31,7 +32,7 @@
 ## 3. 链路（6 步）
 
 ```
-1. 人    JIRA 票                                          = 业务 why
+1. 人    工单（JIRA / Linear）                            = 业务 why
 2. AI    调查 + 分析 → GitHub Issue(what+方向+验收) +「待审核」  ← 唯一审核闸口
 3. 人    审核 / 修改 Issue →「已审核」                        ← /loop 监到「已审核」即开工
 4. AI    ① 由 Issue 派生 design/changes/MOS-XXXX.md（逐文件实装蓝图）
@@ -57,7 +58,7 @@
 
 | 环节 | 件 |
 |------|----|
-| 读 JIRA | `.claude/ai-workflow/jira_api.py`（工具集自带，不依赖目标仓 skill） |
+| 读工单 | `.claude/ai-workflow/jira_api.py`（JIRA）/ `linear_api.py`（Linear）—— 工具集自带，`get` 输出同构，不依赖目标仓 skill |
 | 第 2 步 调查→Issue | `jira-to-issue`（B）：`Agent(Explore/Plan)` + `gh issue create`/upsert |
 | label / 闸口 | `gh label`（待审核/已审核/已实装/待裁决） |
 | 触发 | `webhook-receiver/server.py`（单例，事件驱动 + 多仓路由），非轮询 |
@@ -85,9 +86,9 @@
 
 待办 / 仍需注意：
 
-- **JIRA `description` 是 ADF（Atlassian Document Format）JSON**，非纯文本 → `jira-to-issue` 须解析 ADF 提取正文与链接。
+- **JIRA `description` 是 ADF（Atlassian Document Format）JSON**，非纯文本 → `jira-to-issue` 须解析 ADF 提取正文与链接。（**Linear `description` 是 Markdown 纯文本**，无此负担，直接可用。）
 - **`dev-flow` 有 5 处「等待用户确认」**（Phase 1/2/4/5/7）→ 第 4 步需非交互变体；Phase 1/2 的业务判断已前移至 Issue 闸口，4/7 可改自动阈值。
-- **JIRA 无评论 API**（`jira_api.py` 仅字段更新/状态转换）→ 可选的「回写 JIRA 链接」需补 `add_comment`，非阻塞。
+- **JIRA 无评论 API**（`jira_api.py` 仅字段更新/状态转换）→ 可选的「回写 JIRA 链接」需补 `add_comment`，非阻塞。（**Linear 有评论 API**：`linear_api.py comment`，可回写 Issue 链接，当前默认仍跳过以保持最小副作用。）
 - AI 调查质量 = 整条链上限：闸口 A 之前的 Issue 若调查不足，下游全偏。
 - `/loop` 轮询的并发与去重（同一 Issue 重复触发）需幂等保护。
 - 第 4 步全自动跨度大（实装+测试+PR），失败回退与中断恢复策略待定。

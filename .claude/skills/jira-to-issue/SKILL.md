@@ -1,14 +1,15 @@
 ---
 name: jira-to-issue
-description: "读取 JIRA 工单，调查代码与设计现状并分析，落地为一份正式的 GitHub Issue（带「待审核」标签），作为人类审核闸口与下游实装的唯一依据。不是搬运，而是调查+分析。触发时机: 把MOS-xxxx整理成issue / 由JIRA创建issue / jira转issue / 起一个待审核issue"
+description: "读取工单（JIRA 或 Linear），调查代码与设计现状并分析，落地为一份正式的 GitHub Issue（带「待审核」标签），作为人类审核闸口与下游实装的唯一依据。不是搬运，而是调查+分析。触发时机: 把MOS-xxxx/SUM-xxxx整理成issue / 由JIRA或Linear创建issue / jira转issue / linear转issue / 起一个待审核issue"
 user-invokable: true
 ---
 
-# JIRA → GitHub Issue（调查·分析·落地）
+# 工单（JIRA / Linear）→ GitHub Issue（调查·分析·落地）
 
 ## 概述
 
-把一张 JIRA 工单（业务 why）落成一份**代码级、可被 GitHub 原生闭环消费的正式 Issue**（what + 方向 + 验收）。
+把一张工单（JIRA 或 Linear，业务 why）落成一份**代码级、可被 GitHub 原生闭环消费的正式 Issue**（what + 方向 + 验收）。
+> 工单源由工单号前缀自动判定：`MOS-` 等走 JIRA；其余形如 `TEAM-数字`（如 `SUM-123`）走 Linear。下文以 JIRA 为主线，Linear 差异在各步显式标注。
 这不是文本搬运，而是「调查现状 → 分析 → 结构化落地」。产出的 Issue 是：
 
 1. **人类唯一的需求审核闸口**（打 `待审核`，人审改后由人打 `已审核`）；
@@ -18,7 +19,7 @@ user-invokable: true
 
 ## 输入
 
-- JIRA 工单号（`MOS-XXXX`）。无则向用户索取。
+- 工单号：JIRA `MOS-XXXX` 或 Linear `TEAM-XXXX`（如 `SUM-123`）。无则向用户索取。
 
 ## 真相源优先级（调查时遵循，冲突时由高到低）
 
@@ -38,21 +39,33 @@ bash .claude/ai-workflow/notify.sh "<消息>"
 
 ## 工作流程
 
-### Step 0：确定工单号
+### Step 0：确定工单号与工单源
 
-从 `$ARGUMENTS` 提取 `MOS-XXXX`；缺失则向用户索取。
+从 `$ARGUMENTS` 提取工单号；缺失则向用户索取。按前缀判定工单源：
 
-### Step 1：读取 JIRA 工单
+- `MOS-XXXX`（及其它 JIRA 项目 key）→ **JIRA**，用 `jira_api.py`。
+- 其余形如 `TEAM-数字`（如 `SUM-123`）→ **Linear**，用 `linear_api.py`。
 
+### Step 1：读取工单
+
+**JIRA：**
 ```bash
 python3 .claude/ai-workflow/jira_api.py get <MOS-XXXX>
 ```
-
 - `description` 是 **ADF（Atlassian Document Format）JSON**，不是纯文本。需自行解析：
   - 正文 = 递归提取各节点的 `text`；
   - **链接** = ADF 节点 `marks` 中 `type: "link"` 的 `attrs.href`（设计书 / Confluence / 图等）。
+
+**Linear：**
+```bash
+python3 .claude/ai-workflow/linear_api.py get <TEAM-XXXX>
+```
+- `description` 是 **Markdown 纯文本**，直接可用；链接为标准 Markdown `[text](url)`，无需 ADF 解析。
+- 返回另带 `url`（工单页地址），用于 Issue「来源」。
+
+**两者通用：**
 - 把工单内所有链接文档**全部读取**（设计书、Confluence、外部 API 契约等），作为调查输入。
-- 记录：`summary`、`status`、`issuetype`、`labels`、`parent`、`subtasks`。
+- 记录：`summary`、`status`、`issuetype`、`labels`、`parent`、`subtasks`。两个客户端 `get` 输出字段同构。
 
 ### Step 2：并行调查现状（Agent Explore，多路并发）
 
@@ -105,9 +118,10 @@ gh issue edit <N> --add-label "待审核" \
 - 标签始终归位到 `待审核`；类型标签（`enhancement`/`bug`）可保留或一并加。
 - 完成后向用户报告 Issue URL（注明是新建还是重建）。
 
-### Step 5：回写 JIRA 关联（可选）
+### Step 5：回写工单关联（可选）
 
-`jira_api.py` 目前**无评论 API**（仅字段更新 / 状态转换）。如需 JIRA↔Issue 双向关联，需先补 `add_comment`；当前默认**跳过**，仅在报告里给出 Issue URL 供人工回填。
+- **JIRA**：`jira_api.py` 目前**无评论 API**（仅字段更新 / 状态转换）。默认**跳过**，仅在报告里给出 Issue URL 供人工回填。
+- **Linear**：`linear_api.py comment <TEAM-XXXX> "<正文>"` 可写评论。如需 Linear↔Issue 双向关联，可回写 Issue URL；当前默认仍**跳过**（保持与 JIRA 一致的最小副作用），仅在报告里给出 URL。
 
 ## Issue 正文模板
 
@@ -115,7 +129,7 @@ gh issue edit <N> --add-label "待审核" \
 # [MOS-XXXX] <简明需求标题>
 
 ## 来源
-- JIRA: https://mosavi.atlassian.net/browse/MOS-XXXX
+- 工单: <JIRA: https://<domain>/browse/MOS-XXXX ｜ Linear: get 返回的 url>
 - 类型 / 状态: <issuetype> / <status>
 - 原始摘要: <summary 一句话>
 
