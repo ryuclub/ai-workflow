@@ -1,0 +1,24 @@
+{
+  "_说明": "复制为 config.json（gitignore，机器相关）。default=标题无信号时的默认仓。路由：标题含 [<repo-key>] 显式标记优先（如 [channel]）；否则按各仓 match 关键词；再否则 default；命中冲突→Slack 不派。",
+  "default": "channel",
+  "repos": {
+    "channel": {
+      "github": "MosaviJP/Mosavi-Channel-Service",
+      "path": "/abs/path/to/Mosavi-Channel-Service",
+      "match": [
+        "channel",
+        "频道",
+        "Channel"
+      ]
+    },
+    "group": {
+      "github": "MosaviJP/Mosavi-Group-Service",
+      "path": "/abs/path/to/Mosavi-Group-Service",
+      "match": [
+        "group",
+        "群组",
+        "Group"
+      ]
+    }
+  }
+}

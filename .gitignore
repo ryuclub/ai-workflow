@@ -1,0 +1,13 @@
+# 密钥与运行时产物（绝不入库）
+.env
+**/.env
+**/__pycache__/
+.claude/ai-workflow/config.json
+
+# Claude Code 运行时
+.claude/.remote-cache/
+.claude/.remote-load.json
+scheduled_tasks.lock
+
+# OS
+.DS_Store
