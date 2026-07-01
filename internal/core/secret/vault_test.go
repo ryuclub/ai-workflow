@@ -1,0 +1,77 @@
+package secret
+
+import "testing"
+
+// fakeStore 是内存版 Store，用于测试加密 round-trip 与两级解析。
+type fakeStore struct {
+	tenant map[string][]byte
+	user   map[string][]byte
+}
+
+func newFake() *fakeStore {
+	return &fakeStore{tenant: map[string][]byte{}, user: map[string][]byte{}}
+}
+func (f *fakeStore) PutTenantSecret(t, k string, enc []byte) error { f.tenant[t+"/"+k] = enc; return nil }
+func (f *fakeStore) GetTenantSecret(t, k string) ([]byte, error)   { return f.tenant[t+"/"+k], nil }
+func (f *fakeStore) PutUserSecret(u, k string, enc []byte) error   { f.user[u+"/"+k] = enc; return nil }
+func (f *fakeStore) GetUserSecret(u, k string) ([]byte, error)     { return f.user[u+"/"+k], nil }
+
+func TestNilWhenNoMasterKey(t *testing.T) {
+	v, err := New("", newFake())
+	if err != nil || v != nil {
+		t.Fatalf("空 MASTER_KEY 应返回 (nil,nil)，得 (%v,%v)", v, err)
+	}
+}
+
+func TestRoundTripAndCiphertext(t *testing.T) {
+	f := newFake()
+	v, err := New("master-passphrase", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetTenant("t1", KeyClaudeToken, "sk-token-abc"); err != nil {
+		t.Fatal(err)
+	}
+	// 落库应为密文，不含明文
+	if string(f.tenant["t1/"+KeyClaudeToken]) == "sk-token-abc" {
+		t.Fatal("凭据未加密即落库")
+	}
+	if !v.HasTenant("t1", KeyClaudeToken) {
+		t.Fatal("应探测到已配置")
+	}
+	if got := v.getTenant("t1", KeyClaudeToken); got != "sk-token-abc" {
+		t.Fatalf("解密不符：%q", got)
+	}
+}
+
+func TestResolveTwoTier(t *testing.T) {
+	v, _ := New("k", newFake())
+	// 都未配 → 空
+	if v.ResolveClaudeToken("t1", "u1") != "" {
+		t.Fatal("未配应为空")
+	}
+	// 仅租户共享 → 用共享
+	_ = v.SetTenant("t1", KeyClaudeToken, "tenant-tok")
+	if got := v.ResolveClaudeToken("t1", "u1"); got != "tenant-tok" {
+		t.Fatalf("应回落租户共享，得 %q", got)
+	}
+	// 用户个人 → 覆盖租户
+	_ = v.SetUser("u1", KeyClaudeToken, "user-tok")
+	if got := v.ResolveClaudeToken("t1", "u1"); got != "user-tok" {
+		t.Fatalf("个人应覆盖租户，得 %q", got)
+	}
+	// 另一个没个人令牌的用户 → 仍用租户共享
+	if got := v.ResolveClaudeToken("t1", "u2"); got != "tenant-tok" {
+		t.Fatalf("u2 应回落租户，得 %q", got)
+	}
+}
+
+func TestWrongKeyCannotDecrypt(t *testing.T) {
+	f := newFake()
+	v1, _ := New("key-A", f)
+	_ = v1.SetTenant("t1", KeyClaudeToken, "secret")
+	v2, _ := New("key-B", f) // 换主密钥
+	if v2.getTenant("t1", KeyClaudeToken) != "" {
+		t.Fatal("错误主密钥不应能解密")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/ryuclub/ai-workflow/internal/core/events"
 	"github.com/ryuclub/ai-workflow/internal/core/orchestrator"
 	"github.com/ryuclub/ai-workflow/internal/core/runner"
+	"github.com/ryuclub/ai-workflow/internal/core/secret"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 )
 
@@ -43,11 +44,21 @@ func main() {
 		log.Fatalf("初始化管理员失败: %v", err)
 	}
 
+	// 凭据保险箱：MASTER_KEY 未配则为 nil（禁用凭据存储，令牌回落宿主登录态）。
+	vault, err := secret.New(os.Getenv("MASTER_KEY"), st)
+	if err != nil {
+		log.Fatalf("初始化凭据保险箱失败: %v", err)
+	}
+	rt.SetVault(vault)
+	if vault == nil {
+		log.Printf("⚠ 未设 MASTER_KEY：凭据存储禁用，Claude 令牌将回落宿主登录态（仅适合单机开发）")
+	}
+
 	bus := events.NewBus(st, events.NewSlackSink(cfg.SlackWebhook()))
 	orch := orchestrator.New(rt, st, bus, runner.NewClaude(rt))
 	orch.StartPoller(context.Background()) // 后台轮询 PR 审查决议，驱动修订循环
 
-	srv := api.NewServer(rt, st, st, bus, orch)
+	srv := api.NewServer(rt, st, st, vault, bus, orch)
 	addr := cfg.Host() + ":" + strconv.Itoa(cfg.Port())
 	authOn := "off"
 	if cfg.AdminToken() != "" {
