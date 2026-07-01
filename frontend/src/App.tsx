@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AuthError, clearToken, getAuthStatus, getPipeline, getSource, getToken } from "./api";
+import { AuthError, clearToken, getAuthStatus, getMe, getPipeline, getSource, getToken, logout, setRole } from "./api";
 import HealthPill from "./components/HealthPill";
 import Login from "./components/Login";
 import Settings from "./components/Settings";
@@ -32,7 +32,8 @@ export default function App() {
         if (!a.auth_required) return setAuthed(true);
         if (!getToken()) return setAuthed(false);
         try {
-          await getSource();
+          const m = await getMe(); // 验证会话并刷新角色
+          setRole(m.role);
           setAuthed(true);
         } catch (e) {
           setAuthed(e instanceof AuthError ? false : true);
@@ -101,7 +102,7 @@ export default function App() {
             ⚙ 设置
           </button>
           {getToken() && (
-            <button className="mini" onClick={() => { clearToken(); setAuthed(false); }}>退出</button>
+            <button className="mini" onClick={() => { logout().catch(() => {}); clearToken(); setAuthed(false); }}>退出</button>
           )}
         </span>
       </header>

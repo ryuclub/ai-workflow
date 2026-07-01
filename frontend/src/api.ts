@@ -9,11 +9,18 @@ import type {
   Ticket,
 } from "./types";
 
-// —— Admin token（鉴权开启时使用）——
-const TOKEN_KEY = "wf.admin.token";
+// —— 登录会话 token 与当前角色 ——
+const TOKEN_KEY = "wf.session.token";
+const ROLE_KEY = "wf.session.role";
 export const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
 export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t);
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+export const clearToken = () => {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(ROLE_KEY);
+};
+export const getRole = () => localStorage.getItem(ROLE_KEY) || "";
+export const setRole = (r: string) => localStorage.setItem(ROLE_KEY, r);
+export const isAdmin = () => getRole() === "admin";
 
 export class AuthError extends Error {}
 
@@ -42,7 +49,36 @@ const send = (method: string, url: string, body?: unknown) =>
   });
 
 export const getAuthStatus = () =>
-  fetch("/api/v1/auth/status").then(j<{ auth_required: boolean }>);
+  fetch("/api/v1/auth/status").then(j<{ auth_required: boolean; bootstrapped: boolean }>);
+
+// —— 登录会话 ——
+export interface Membership { user_id: string; tenant_id: string; role: string }
+export interface LoginResult {
+  token: string;
+  role: string;
+  tenant_id: string;
+  tenants: Membership[];
+  user: { id: string; email: string };
+}
+export const login = (email: string, password: string, tenant_id?: string) =>
+  fetch("/api/v1/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, tenant_id }),
+  }).then(j<LoginResult>);
+export const logout = () => send("POST", "/api/v1/auth/logout").then(j<{ ok: boolean }>);
+export const getMe = () =>
+  get("/api/v1/auth/me").then(j<{ user_id: string; tenant_id: string; role: string }>);
+
+// —— Claude 登录态令牌（租户共享=管理员；个人=本人）——
+export const getTenantClaudeToken = () =>
+  get("/api/v1/settings/claude-token").then(j<{ configured: boolean }>);
+export const putTenantClaudeToken = (token: string) =>
+  send("PUT", "/api/v1/settings/claude-token", { token }).then(j<{ ok: boolean; configured: boolean }>);
+export const getMyClaudeToken = () =>
+  get("/api/v1/me/claude-token").then(j<{ configured: boolean }>);
+export const putMyClaudeToken = (token: string) =>
+  send("PUT", "/api/v1/me/claude-token", { token }).then(j<{ ok: boolean; configured: boolean }>);
 
 export const getSource = () =>
   get("/api/v1/source").then(j<{ source: string; default_query: string }>);
