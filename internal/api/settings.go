@@ -51,21 +51,34 @@ func (s *Server) saveTenantConfig(c *gin.Context, cfg *config.Config) error {
 	return s.ids.PutTenantConfigJSON(c.GetString(ctxTenantID), j)
 }
 
-// saveTenantCreds 把凭据写入该租户：有 vault 则加密存租户密钥；否则回落全局 .env（单机开发）。
-func (s *Server) saveTenantCreds(c *gin.Context, cfg *config.Config, creds map[string]string) error {
-	tid := c.GetString(ctxTenantID)
-	if s.vault != nil {
-		for k, v := range creds {
+// saveTenantCreds 把凭据加密写入该租户密钥。无 MASTER_KEY（vault==nil）时拒绝：
+// 全局 .env 为所有租户共享，写进去即跨租户串凭据，故按租户存凭据强制要求 MASTER_KEY。
+func (s *Server) saveTenantCreds(c *gin.Context, creds map[string]string) error {
+	if s.vault == nil {
+		// 无凭据可写时（全空）视为无操作，放行；有非空凭据则要求 MASTER_KEY。
+		for _, v := range creds {
 			if v != "" {
-				if err := s.vault.SetTenant(tid, k, v); err != nil {
-					return err
-				}
+				return errNeedMasterKey
 			}
 		}
 		return nil
 	}
-	return cfg.SetEnv(creds) // 无 MASTER_KEY：回落全局 .env
+	tid := c.GetString(ctxTenantID)
+	for k, v := range creds {
+		if v != "" {
+			if err := s.vault.SetTenant(tid, k, v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
+
+var errNeedMasterKey = errText("按租户存储凭据需配置 MASTER_KEY（未配则凭据无法隔离）")
+
+type errText string
+
+func (e errText) Error() string { return string(e) }
 
 // GET /api/v1/settings
 func (s *Server) getSettings(c *gin.Context) {
@@ -93,7 +106,7 @@ func (s *Server) putSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	cfg := s.cfg(c)
+	cfg := s.cfg(c).Clone() // 在副本上改，避免与编排器并发读缓存实例的 map
 	// 凭据按租户存（空=不改）
 	creds := map[string]string{
 		"ATLASSIAN_DOMAIN":   req.JiraDomain,
@@ -104,8 +117,12 @@ func (s *Server) putSettings(c *gin.Context) {
 		"LINEAR_API_KEY":     req.LinearAPIKey,
 		"GITHUB_TOKEN":       req.GithubToken,
 	}
-	if err := s.saveTenantCreds(c, cfg, creds); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写凭据失败：" + err.Error()})
+	if err := s.saveTenantCreds(c, creds); err != nil {
+		code := http.StatusInternalServerError
+		if err == errNeedMasterKey {
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, gin.H{"error": "写凭据失败：" + err.Error()})
 		return
 	}
 	// source / status_map 写该租户配置
@@ -136,7 +153,11 @@ func (s *Server) testConnection(c *gin.Context) {
 	defer cancel()
 	switch c.Param("kind") {
 	case "source":
-		items, err := s.src(c).List(ctx, "", 1)
+		p := s.srcReady(c)
+		if p == nil {
+			return
+		}
+		items, err := p.List(ctx, "", 1)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
 			return
@@ -186,7 +207,7 @@ func (s *Server) upsertRepo(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "无法访问该仓（检查地址/权限/GitHub token）：" + err.Error()})
 		return
 	}
-	cfg := s.cfg(c)
+	cfg := s.cfg(c).Clone()
 	repo := config.Repo{Name: req.Name, GitHub: req.GitHub, Path: req.Path, Match: req.Match, Base: req.Base}
 	switch {
 	case req.Enabled != nil:
@@ -217,7 +238,7 @@ func (s *Server) setRepoEnabled(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	cfg := s.cfg(c)
+	cfg := s.cfg(c).Clone()
 	name := c.Param("name")
 	r, ok := cfg.Repos[name]
 	if !ok {
@@ -242,7 +263,7 @@ func (s *Server) importRepos(c *gin.Context) {
 		Owner string `json:"owner"`
 	}
 	_ = c.ShouldBindJSON(&req)
-	cfg := s.cfg(c)
+	cfg := s.cfg(c).Clone()
 	ctx, cancel := contextWithTimeout(c, 60*time.Second)
 	defer cancel()
 
@@ -331,7 +352,7 @@ func uniqueRepoKey(cfg *config.Config, name string) string {
 
 // DELETE /api/v1/settings/repos/:name
 func (s *Server) deleteRepo(c *gin.Context) {
-	cfg := s.cfg(c)
+	cfg := s.cfg(c).Clone()
 	name := c.Param("name")
 	delete(cfg.Repos, name)
 	if cfg.Default == name {

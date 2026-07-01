@@ -44,6 +44,29 @@ func (c *Config) tenantSub(base string) string {
 	return filepath.Join(base, c.TenantID)
 }
 
+// Clone 深拷贝可变部分（Repos/StatusMap/Env），供设置 handler 在副本上改，
+// 避免与编排器并发读同一缓存实例的 map 而 fatal panic。
+func (c *Config) Clone() *Config {
+	nc := *c
+	nc.Repos = make(map[string]Repo, len(c.Repos))
+	for k, v := range c.Repos {
+		nc.Repos[k] = v
+	}
+	nc.StatusMap = make(map[string]string, len(c.StatusMap))
+	for k, v := range c.StatusMap {
+		nc.StatusMap[k] = v
+	}
+	nc.Env = make(map[string]string, len(c.Env))
+	for k, v := range c.Env {
+		nc.Env[k] = v
+	}
+	return &nc
+}
+
+// getCred 取「按租户凭据」：只读该租户 Env，不看进程环境——否则宿主导出的
+// GITHUB_TOKEN/ATLASSIAN_* 等会架空所有租户的隔离凭据。
+func (c *Config) getCred(key string) string { return c.Env[key] }
+
 // Load 读取仓根下的 config.json 与 .claude/ai-workflow/.env。
 // 二者缺失都不致命：返回可用的空配置，由各取值方法兜底。
 func Load(root string) (*Config, error) {
@@ -146,10 +169,10 @@ func (c *Config) JiraScript() string {
 }
 
 // JiraProject 是默认 JQL 的项目键（无默认值，由租户在 .env/config 配置 JIRA_PROJECT）。
-func (c *Config) JiraProject() string { return c.get("JIRA_PROJECT", "") }
+func (c *Config) JiraProject() string { return c.getCred("JIRA_PROJECT") }
 
 // AtlassianDomain 是 Atlassian 站点域名（如 your-domain.atlassian.net），用于拼 browse 链接。
-func (c *Config) AtlassianDomain() string { return c.get("ATLASSIAN_DOMAIN", "") }
+func (c *Config) AtlassianDomain() string { return c.getCred("ATLASSIAN_DOMAIN") }
 
 // ActiveSource 返回活跃票源（jira / linear），config.json > 环境 > 默认 jira。
 func (c *Config) ActiveSource() string {
@@ -160,10 +183,10 @@ func (c *Config) ActiveSource() string {
 }
 
 // LinearAPIKey 是 Linear Personal API Key。
-func (c *Config) LinearAPIKey() string { return c.get("LINEAR_API_KEY", "") }
+func (c *Config) LinearAPIKey() string { return c.getCred("LINEAR_API_KEY") }
 
 // LinearTeam 是 Linear 团队 key（如 ENG），可空。
-func (c *Config) LinearTeam() string { return c.get("LINEAR_TEAM", "") }
+func (c *Config) LinearTeam() string { return c.getCred("LINEAR_TEAM") }
 
 // SuggestRepo 据票标题预选目标仓（移植自旧 server.py 路由）：
 // 标题含 [<repo-key>] 显式标记优先；否则按各仓 match 关键词；命中唯一才返回，否则回退默认仓。
@@ -225,7 +248,7 @@ func (c *Config) EventURLBase() string {
 }
 
 // GithubToken 用于自管克隆私有仓与 github API（空则回退 gh 登录态）。
-func (c *Config) GithubToken() string { return c.get("GITHUB_TOKEN", "") }
+func (c *Config) GithubToken() string { return c.getCred("GITHUB_TOKEN") }
 
 // AdminToken 设了则启用公共 API 鉴权（Bearer）。
 func (c *Config) AdminToken() string { return c.get("ADMIN_TOKEN", "") }

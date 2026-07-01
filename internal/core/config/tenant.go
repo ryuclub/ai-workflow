@@ -4,9 +4,10 @@ import "encoding/json"
 
 // CredentialKeys 是「按租户」的机密/凭据键：不从全局 .env 继承，只来自该租户的加密凭据。
 // 运行期操作键（PORT/WORKTREE_BASE/INTERNAL_TOKEN/CLAUDE_BIN 等）仍全局共享。
+// SLACK_WEBHOOK_URL 暂为全局（事件总线单份消费），不列入——避免造成「已按租户配置」的错觉。
 var CredentialKeys = []string{
 	"ATLASSIAN_USERNAME", "ATLASSIAN_API_KEY", "ATLASSIAN_DOMAIN", "JIRA_PROJECT",
-	"LINEAR_API_KEY", "LINEAR_TEAM", "GITHUB_TOKEN", "SLACK_WEBHOOK_URL",
+	"LINEAR_API_KEY", "LINEAR_TEAM", "GITHUB_TOKEN",
 }
 
 // FromTenant 据全局模板 base + 该租户配置 JSON + 该租户凭据构造租户级 Config。

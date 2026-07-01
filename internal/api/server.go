@@ -46,6 +46,15 @@ func (s *Server) cfg(c *gin.Context) *config.Config  { return s.deps.Config(c.Ge
 func (s *Server) src(c *gin.Context) source.Provider { return s.deps.Provider(c.GetString(ctxTenantID)) }
 func (s *Server) gh(c *gin.Context) *github.Client   { return s.deps.Github(c.GetString(ctxTenantID)) }
 
+// srcReady 取当前租户票源；未配置（源非法/未建）返回 nil 并已写好 503，调用方直接 return。
+func (s *Server) srcReady(c *gin.Context) source.Provider {
+	p := s.src(c)
+	if p == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "该租户票源未配置（请在设置中选择并配置 jira / linear）"})
+	}
+	return p
+}
+
 // Router 构建 gin 引擎并挂载公共(v1) + 内部路由。
 func (s *Server) Router() *gin.Engine {
 	r := gin.New()
