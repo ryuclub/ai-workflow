@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS sessions (
   role TEXT NOT NULL,
   expires_at TIMESTAMP NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tenant_secrets (
+  tenant_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value_enc BLOB NOT NULL,
+  PRIMARY KEY (tenant_id, key)
+);
+CREATE TABLE IF NOT EXISTS user_secrets (
+  user_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value_enc BLOB NOT NULL,
+  PRIMARY KEY (user_id, key)
+);
 `)
 	if err != nil {
 		return err

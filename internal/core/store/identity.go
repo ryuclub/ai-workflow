@@ -185,3 +185,43 @@ func (s *SQLite) DeleteSession(token string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
 	return err
 }
+
+// ── 加密凭据（密文块，明文加解密在 secret.Vault） ───────────────────────
+
+func (s *SQLite) PutTenantSecret(tenantID, key string, enc []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO tenant_secrets(tenant_id,key,value_enc) VALUES(?,?,?)
+		 ON CONFLICT(tenant_id,key) DO UPDATE SET value_enc=excluded.value_enc`,
+		tenantID, key, enc)
+	return err
+}
+
+func (s *SQLite) GetTenantSecret(tenantID, key string) ([]byte, error) {
+	var enc []byte
+	err := s.db.QueryRow(`SELECT value_enc FROM tenant_secrets WHERE tenant_id=? AND key=?`, tenantID, key).Scan(&enc)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return enc, err
+}
+
+func (s *SQLite) PutUserSecret(userID, key string, enc []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO user_secrets(user_id,key,value_enc) VALUES(?,?,?)
+		 ON CONFLICT(user_id,key) DO UPDATE SET value_enc=excluded.value_enc`,
+		userID, key, enc)
+	return err
+}
+
+func (s *SQLite) GetUserSecret(userID, key string) ([]byte, error) {
+	var enc []byte
+	err := s.db.QueryRow(`SELECT value_enc FROM user_secrets WHERE user_id=? AND key=?`, userID, key).Scan(&enc)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return enc, err
+}
