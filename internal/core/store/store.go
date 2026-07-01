@@ -45,8 +45,10 @@ const (
 // Task 是一次流水线执行。
 type Task struct {
 	ID           string    `json:"id"`
-	Seq          int       `json:"seq"`       // 人类可读自增编号（#1、#2…），便于口头引用
-	Source       string    `json:"source"`    // jira / linear
+	Seq          int       `json:"seq"`         // 人类可读自增编号（#1、#2…），便于口头引用
+	TenantID     string    `json:"tenant_id"`   // 归属租户（公司）
+	CreatedBy    string    `json:"created_by"`  // 开此任务的用户 id（Claude 令牌两级解析用）
+	Source       string    `json:"source"`      // jira / linear
 	SourceID     string    `json:"source_id"` // 源内标识：PROJ-3252 / ENG-12
 	Title        string    `json:"title"`     // 起任务时的票标题快照（列表/详情展示用）
 	Repo         string    `json:"repo"`
@@ -89,6 +91,7 @@ type Store interface {
 	CreateTask(t *Task) error
 	GetTask(id string) (*Task, error)
 	ListTasks() ([]*Task, error)
+	ListTasksByTenant(tenantID string) ([]*Task, error)
 	UpdateTask(t *Task) error
 	FindByIdem(idem string) (*Task, error)
 	FindBySource(source, sourceID string) (*Task, error) // 最近一个，供列表去重标记

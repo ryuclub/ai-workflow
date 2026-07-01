@@ -71,6 +71,30 @@ CREATE TABLE IF NOT EXISTS events (
   ts TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
+CREATE TABLE IF NOT EXISTS tenants (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memberships (
+  user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  PRIMARY KEY (user_id, tenant_id)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
 `)
 	if err != nil {
 		return err
@@ -81,6 +105,10 @@ CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN pr_num INTEGER DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN review_round INTEGER DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN review_cursor TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN tenant_id TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN created_by TEXT DEFAULT ''`)
+	// tenant_id 索引须在列存在（含旧库 ALTER 补列）之后建。
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant_id, created_at)`)
 	// 回填历史任务的编号（仅 seq=0 的旧行，按 rowid 赋递增号）。
 	_, _ = s.db.Exec(`UPDATE tasks SET seq=rowid WHERE seq=0`)
 	return nil
@@ -93,15 +121,15 @@ func (s *SQLite) CreateTask(t *Task) error {
 	_ = s.db.QueryRow(`SELECT IFNULL(MAX(seq),0)+1 FROM tasks`).Scan(&seq)
 	t.Seq = int(seq)
 	_, err := s.db.Exec(
-		`INSERT INTO tasks(id,seq,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,idem_key,error,created_at,updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Seq, t.Source, t.SourceID, t.Title, t.Repo, t.PipelineID, t.State, t.IssueURL, t.IssueNum, t.PRURL, t.PRNum, t.ReviewRound, t.ReviewCursor, t.IdemKey, t.Error, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO tasks(id,seq,tenant_id,created_by,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,idem_key,error,created_at,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Seq, t.TenantID, t.CreatedBy, t.Source, t.SourceID, t.Title, t.Repo, t.PipelineID, t.State, t.IssueURL, t.IssueNum, t.PRURL, t.PRNum, t.ReviewRound, t.ReviewCursor, t.IdemKey, t.Error, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
 func scanTask(row interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	err := row.Scan(&t.ID, &t.Seq, &t.Source, &t.SourceID, &t.Title, &t.Repo, &t.PipelineID, &t.State,
+	err := row.Scan(&t.ID, &t.Seq, &t.TenantID, &t.CreatedBy, &t.Source, &t.SourceID, &t.Title, &t.Repo, &t.PipelineID, &t.State,
 		&t.IssueURL, &t.IssueNum, &t.PRURL, &t.PRNum, &t.ReviewRound, &t.ReviewCursor, &t.IdemKey, &t.Error, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -109,7 +137,7 @@ func scanTask(row interface{ Scan(...any) error }) (*Task, error) {
 	return &t, nil
 }
 
-const taskCols = `id,seq,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,idem_key,error,created_at,updated_at`
+const taskCols = `id,seq,tenant_id,created_by,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,idem_key,error,created_at,updated_at`
 
 func (s *SQLite) GetTask(id string) (*Task, error) {
 	row := s.db.QueryRow(`SELECT `+taskCols+` FROM tasks WHERE id=?`, id)
@@ -143,6 +171,24 @@ func (s *SQLite) FindBySource(source, sourceID string) (*Task, error) {
 
 func (s *SQLite) ListTasks() ([]*Task, error) {
 	rows, err := s.db.Query(`SELECT ` + taskCols + ` FROM tasks ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ListTasksByTenant 仅返回某租户的任务（列表按租户过滤，防越权）。
+func (s *SQLite) ListTasksByTenant(tenantID string) ([]*Task, error) {
+	rows, err := s.db.Query(`SELECT `+taskCols+` FROM tasks WHERE tenant_id=? ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
 	}
