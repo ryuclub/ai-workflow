@@ -34,9 +34,9 @@ const maxReviewRounds = 5
 
 // Deps 提供随设置热重载而变的依赖（配置 / 票源 / GitHub 客户端）。
 type Deps interface {
-	Config() *config.Config
-	Provider() source.Provider
-	Github() *github.Client
+	Config(tenantID string) *config.Config    // tenantID 为空返回全局模板（运行期操作键）
+	Provider(tenantID string) source.Provider // 按租户票源
+	Github(tenantID string) *github.Client    // 按租户 GitHub 客户端
 }
 
 // Orchestrator 持有依赖并驱动任务状态机。
@@ -47,7 +47,9 @@ type Orchestrator struct {
 	pl     pipeline.Pipeline
 	runner runner.Runner
 
-	sem      chan struct{} // 并发闸：限制同时跑 claude 的任务数
+	semSize  int                      // 每租户并发上限
+	semMu    sync.Mutex               // 保护 sems
+	sems     map[string]chan struct{} // 每租户并发闸：一家占满不影响他家
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc // 运行中任务的取消句柄
 	canceled map[string]bool               // 已请求取消的任务
@@ -57,22 +59,34 @@ type Orchestrator struct {
 func New(deps Deps, st store.Store, bus *events.Bus, r runner.Runner) *Orchestrator {
 	return &Orchestrator{
 		deps: deps, st: st, bus: bus, pl: pipeline.Default(), runner: r,
-		sem:     make(chan struct{}, deps.Config().MaxConcurrent()),
+		semSize: deps.Config("").MaxConcurrent(), sems: map[string]chan struct{}{},
 		cancels: map[string]context.CancelFunc{}, canceled: map[string]bool{},
 	}
 }
 
-// acquire 取并发槽；排队期间若任务被取消（ctx done）则返回 false。
-func (o *Orchestrator) acquire(ctx context.Context) bool {
+// tenantSem 返回某租户的并发闸（懒建，容量=semSize）。
+func (o *Orchestrator) tenantSem(tenantID string) chan struct{} {
+	o.semMu.Lock()
+	defer o.semMu.Unlock()
+	s := o.sems[tenantID]
+	if s == nil {
+		s = make(chan struct{}, o.semSize)
+		o.sems[tenantID] = s
+	}
+	return s
+}
+
+// acquire 取该租户的并发槽；排队期间若任务被取消（ctx done）则返回 false。
+func (o *Orchestrator) acquire(ctx context.Context, tenantID string) bool {
 	select {
-	case o.sem <- struct{}{}:
+	case o.tenantSem(tenantID) <- struct{}{}:
 		return true
 	case <-ctx.Done():
 		return false
 	}
 }
 
-func (o *Orchestrator) release() { <-o.sem }
+func (o *Orchestrator) release(tenantID string) { <-o.tenantSem(tenantID) }
 
 // register 为任务建一个可取消上下文并登记取消句柄。
 func (o *Orchestrator) register(id string) context.Context {
@@ -122,11 +136,14 @@ func (o *Orchestrator) Pipeline() pipeline.Pipeline { return o.pl }
 
 // StartTask 校验入参、做幂等、创建任务并异步启动 B。sourceID 为活跃源的工单标识，title 为票标题快照。
 func (o *Orchestrator) StartTask(tenantID, createdBy, sourceID, repo, title, idem string) (*store.Task, error) {
-	src := o.deps.Provider()
+	src := o.deps.Provider(tenantID)
+	if src == nil {
+		return nil, fmt.Errorf("租户票源未配置")
+	}
 	if !src.ValidateID(sourceID) {
 		return nil, fmt.Errorf("非法 %s 标识: %q", src.Name(), sourceID)
 	}
-	if _, ok := o.deps.Config().Repos[repo]; !ok {
+	if _, ok := o.deps.Config(tenantID).Repos[repo]; !ok {
 		return nil, fmt.Errorf("未登记的仓: %q", repo)
 	}
 	if idem != "" {
@@ -164,10 +181,10 @@ func (o *Orchestrator) StartTask(tenantID, createdBy, sourceID, repo, title, ide
 // runB 跑调查→建 Issue，完成后停在人审闸口。
 func (o *Orchestrator) runB(ctx context.Context, t *store.Task) {
 	defer o.unregister(t.ID)
-	if !o.acquire(ctx) { // 排队等并发槽（期间状态保持 queued）
+	if !o.acquire(ctx, t.TenantID) { // 排队等并发槽（期间状态保持 queued）
 		return
 	}
-	defer o.release()
+	defer o.release(t.TenantID)
 	if o.isCanceled(t.ID) {
 		return
 	}
@@ -207,8 +224,8 @@ func (o *Orchestrator) Approve(ctx context.Context, taskID string) error {
 		return fmt.Errorf("任务非等待审核态（当前 %s）", t.State)
 	}
 	if t.IssueNum > 0 {
-		gh := o.deps.Config().Repos[t.Repo].GitHub
-		if err := o.deps.Github().SetLabels(ctx, gh, t.IssueNum, []string{LabelApproved}, []string{LabelPending}); err != nil {
+		gh := o.deps.Config(t.TenantID).Repos[t.Repo].GitHub
+		if err := o.deps.Github(t.TenantID).SetLabels(ctx, gh, t.IssueNum, []string{LabelApproved}, []string{LabelPending}); err != nil {
 			return fmt.Errorf("切换 已审核 标签失败: %w", err)
 		}
 	}
@@ -238,10 +255,10 @@ func (o *Orchestrator) Reject(ctx context.Context, taskID, reason string) error 
 // runC 跑实装→PR。
 func (o *Orchestrator) runC(ctx context.Context, t *store.Task) {
 	defer o.unregister(t.ID)
-	if !o.acquire(ctx) {
+	if !o.acquire(ctx, t.TenantID) {
 		return
 	}
-	defer o.release()
+	defer o.release(t.TenantID)
 	if o.isCanceled(t.ID) {
 		return
 	}
@@ -282,7 +299,7 @@ func (o *Orchestrator) enterPRReview(t *store.Task, msg string) {
 // 据此自动推进「通过→完成」或「changes requested→修订」。ctx 取消即停。
 func (o *Orchestrator) StartPoller(ctx context.Context) {
 	go func() {
-		tk := time.NewTicker(o.deps.Config().PRPollInterval())
+		tk := time.NewTicker(o.deps.Config("").PRPollInterval())
 		defer tk.Stop()
 		for {
 			select {
@@ -301,29 +318,33 @@ func (o *Orchestrator) pollPRReviews(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	var refs []github.PRRef
+	// 按租户分组：各租户用各自的 GitHub 客户端（token 不同），分别批量查询。
 	byKey := map[string]*store.Task{}
+	refsByTenant := map[string][]github.PRRef{}
 	for _, t := range tasks {
 		if t.State != store.StateAwaitingPRReview || t.PRNum == 0 {
 			continue
 		}
-		repo, ok := o.deps.Config().Repos[t.Repo]
+		repo, ok := o.deps.Config(t.TenantID).Repos[t.Repo]
 		if !ok {
 			continue
 		}
-		refs = append(refs, github.PRRef{Key: t.ID, Repo: repo.GitHub, Num: t.PRNum})
+		refsByTenant[t.TenantID] = append(refsByTenant[t.TenantID], github.PRRef{Key: t.ID, Repo: repo.GitHub, Num: t.PRNum})
 		byKey[t.ID] = t
 	}
-	if len(refs) == 0 {
-		return
-	}
-	results, err := o.deps.Github().GetPRReviewsBatch(ctx, refs)
-	if err != nil {
-		return // 整批失败，下轮再试
-	}
-	for key, rv := range results {
-		if t := byKey[key]; t != nil && rv != nil {
-			o.dispatchPRReview(t, rv)
+	for tenantID, refs := range refsByTenant {
+		gh := o.deps.Github(tenantID)
+		if gh == nil {
+			continue
+		}
+		results, err := gh.GetPRReviewsBatch(ctx, refs)
+		if err != nil {
+			continue // 该租户整批失败，下轮再试
+		}
+		for key, rv := range results {
+			if t := byKey[key]; t != nil && rv != nil {
+				o.dispatchPRReview(t, rv)
+			}
 		}
 	}
 }
@@ -374,10 +395,10 @@ func (o *Orchestrator) startRevise(t *store.Task, cursor time.Time) {
 // runD 跑「按 review 意见修订 PR」，完成后回到 PR 审查闸口等下一轮；失败转待裁决。
 func (o *Orchestrator) runD(ctx context.Context, t *store.Task) {
 	defer o.unregister(t.ID)
-	if !o.acquire(ctx) {
+	if !o.acquire(ctx, t.TenantID) {
 		return
 	}
-	defer o.release()
+	defer o.release(t.TenantID)
 	if o.isCanceled(t.ID) {
 		return
 	}
@@ -442,7 +463,7 @@ func (o *Orchestrator) transition(t *store.Task, from, to store.TaskState) bool 
 	}
 	cur.State = to
 	_ = o.st.UpdateTask(cur)
-	o.syncJira(cur.SourceID, to)
+	o.syncJira(cur.TenantID, cur.SourceID, to)
 	*t = *cur
 	return true
 }
@@ -473,16 +494,19 @@ func (o *Orchestrator) reload(t *store.Task) *store.Task {
 func (o *Orchestrator) setState(t *store.Task, s store.TaskState) {
 	t.State = s
 	_ = o.st.UpdateTask(t)
-	o.syncJira(t.SourceID, s)
+	o.syncJira(t.TenantID, t.SourceID, s)
 }
 
-// syncJira 据 config.status_map 把票源状态流转（best-effort，配置为空则不动）。
-func (o *Orchestrator) syncJira(sourceID string, s store.TaskState) {
-	name := o.deps.Config().StatusMap[string(s)]
+// syncJira 据该租户 config.status_map 把票源状态流转（best-effort，配置为空则不动）。
+func (o *Orchestrator) syncJira(tenantID, sourceID string, s store.TaskState) {
+	name := o.deps.Config(tenantID).StatusMap[string(s)]
 	if name == "" {
 		return
 	}
-	prov := o.deps.Provider()
+	prov := o.deps.Provider(tenantID)
+	if prov == nil {
+		return
+	}
 	go func() {
 		if err := prov.Transition(context.Background(), sourceID, name); err != nil {
 			_ = o.bus.Publish(&store.Event{TaskID: "", Type: "source.transition_failed", Level: "warn",

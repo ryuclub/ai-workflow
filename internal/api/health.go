@@ -48,8 +48,14 @@ func (h *healthState) set(c healthCheck) {
 }
 
 // probeGithub / probeSource 轻量、可定时；probeClaude 较重、仅手动触发。
-func (s *Server) probeGithub(ctx context.Context) {
-	login, err := s.gh().WhoAmI(ctx)
+// 均按传入租户探测（健康缓存为全局单份，展示最近一次探测的租户结果——运维诊断用，非数据）。
+func (s *Server) probeGithub(ctx context.Context, tenantID string) {
+	gh := s.deps.Github(tenantID)
+	if gh == nil {
+		s.health.set(healthCheck{"github", false, "该租户未配置 GitHub"})
+		return
+	}
+	login, err := gh.WhoAmI(ctx)
 	if err != nil {
 		s.health.set(healthCheck{"github", false, "未认证：" + tailErr(err)})
 		return
@@ -57,16 +63,21 @@ func (s *Server) probeGithub(ctx context.Context) {
 	s.health.set(healthCheck{"github", true, "已认证：" + login})
 }
 
-func (s *Server) probeSource(ctx context.Context) {
-	if _, err := s.src().List(ctx, "", 1); err != nil {
+func (s *Server) probeSource(ctx context.Context, tenantID string) {
+	prov := s.deps.Provider(tenantID)
+	if prov == nil {
+		s.health.set(healthCheck{"source", false, "该租户未配置票源"})
+		return
+	}
+	if _, err := prov.List(ctx, "", 1); err != nil {
 		s.health.set(healthCheck{"source", false, "不可达：" + tailErr(err)})
 		return
 	}
-	s.health.set(healthCheck{"source", true, s.src().Name() + " 可达"})
+	s.health.set(healthCheck{"source", true, prov.Name() + " 可达"})
 }
 
 func (s *Server) probeClaude(ctx context.Context) {
-	cmd := exec.CommandContext(ctx, s.cfg().ClaudeBin(), "-p", "只回复 ok", "--dangerously-skip-permissions")
+	cmd := exec.CommandContext(ctx, s.deps.Config("").ClaudeBin(), "-p", "只回复 ok", "--dangerously-skip-permissions")
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	err := cmd.Run()
@@ -94,11 +105,12 @@ func (s *Server) getHealth(c *gin.Context) {
 	}
 	s.health.mu.Unlock()
 	if stale {
+		tenantID := c.GetString(ctxTenantID)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
-			s.probeGithub(ctx)
-			s.probeSource(ctx)
+			s.probeGithub(ctx, tenantID)
+			s.probeSource(ctx, tenantID)
 			s.health.mu.Lock()
 			s.health.running = false
 			s.health.mu.Unlock()
@@ -111,8 +123,9 @@ func (s *Server) getHealth(c *gin.Context) {
 func (s *Server) checkHealth(c *gin.Context) {
 	ctx, cancel := contextWithTimeout(c, 40*time.Second)
 	defer cancel()
-	s.probeGithub(ctx)
-	s.probeSource(ctx)
+	tenantID := c.GetString(ctxTenantID)
+	s.probeGithub(ctx, tenantID)
+	s.probeSource(ctx, tenantID)
 	s.probeClaude(ctx)
 	c.JSON(200, gin.H{"checks": s.health.snapshot()})
 }

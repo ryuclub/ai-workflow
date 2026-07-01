@@ -29,7 +29,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("装配运行时失败: %v", err)
 	}
-	cfg := rt.Config()
+	cfg := rt.Config("") // 全局模板：运行期操作键（DB 路径 / Slack / 端口等）
 
 	st, err := store.OpenSQLite(cfg.DBPath())
 	if err != nil {
@@ -39,10 +39,6 @@ func main() {
 	if n, err := st.ReconcileInterrupted(); err == nil && n > 0 {
 		log.Printf("启动对账：%d 个上次残留的运行中任务已标为待裁决", n)
 	}
-	// 无用户时据环境变量 seed 首个租户+管理员（平台手动开通入口）。
-	if err := api.SeedBootstrap(st, os.Getenv("WF_BOOTSTRAP_EMAIL"), os.Getenv("WF_BOOTSTRAP_PASSWORD"), os.Getenv("WF_BOOTSTRAP_TENANT")); err != nil {
-		log.Fatalf("初始化管理员失败: %v", err)
-	}
 
 	// 凭据保险箱：MASTER_KEY 未配则为 nil（禁用凭据存储，令牌回落宿主登录态）。
 	vault, err := secret.New(os.Getenv("MASTER_KEY"), st)
@@ -50,8 +46,14 @@ func main() {
 		log.Fatalf("初始化凭据保险箱失败: %v", err)
 	}
 	rt.SetVault(vault)
+	rt.SetConfigStore(st)
 	if vault == nil {
 		log.Printf("⚠ 未设 MASTER_KEY：凭据存储禁用，Claude 令牌将回落宿主登录态（仅适合单机开发）")
+	}
+
+	// 无用户时 seed 首个租户+管理员，并迁移现有全局配置进该租户（须在 vault 就绪后）。
+	if err := api.SeedBootstrap(st, cfg, vault, os.Getenv("WF_BOOTSTRAP_EMAIL"), os.Getenv("WF_BOOTSTRAP_PASSWORD"), os.Getenv("WF_BOOTSTRAP_TENANT")); err != nil {
+		log.Fatalf("初始化管理员失败: %v", err)
 	}
 
 	bus := events.NewBus(st, events.NewSlackSink(cfg.SlackWebhook()))
@@ -60,15 +62,11 @@ func main() {
 
 	srv := api.NewServer(rt, st, st, vault, bus, orch)
 	addr := cfg.Host() + ":" + strconv.Itoa(cfg.Port())
-	authOn := "off"
-	if cfg.AdminToken() != "" {
-		authOn = "on"
-	}
-	log.Printf("AI 工作流控制面启动 → http://%s  源=%s  鉴权=%s  登记仓=%v",
-		addr, rt.Provider().Name(), authOn, keys(cfg.Repos))
+	log.Printf("AI 工作流控制面启动 → http://%s  默认源=%s  多租户=on  模板登记仓=%v",
+		addr, cfg.ActiveSource(), keys(cfg.Repos))
 	if cfg.Host() == "0.0.0.0" {
-		if authOn == "off" {
-			log.Printf("⚠ 已对局域网开放（HOST=0.0.0.0）但未设 ADMIN_TOKEN，同网段任何人可访问，建议开鉴权")
+		if vault == nil {
+			log.Printf("⚠ 已对局域网开放（HOST=0.0.0.0）但未设 MASTER_KEY，凭据未加密存储，建议配置")
 		}
 		if ips := lanIPs(); len(ips) > 0 {
 			log.Printf("局域网访问地址：http://%s:%d", ips[0], cfg.Port())

@@ -13,7 +13,7 @@ import (
 
 // GET /api/v1/repos — 登记仓列表（仅启用，供候选票选仓下拉/路由）。
 func (s *Server) listRepos(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"default": s.cfg().Default, "repos": s.cfg().EnabledRepoList()})
+	c.JSON(http.StatusOK, gin.H{"default": s.cfg(c).Default, "repos": s.cfg(c).EnabledRepoList()})
 }
 
 // GET /api/v1/pipeline — 内置流水线定义（供前端画节点图）。
@@ -23,7 +23,11 @@ func (s *Server) getPipeline(c *gin.Context) {
 
 // GET /api/v1/source — 活跃票源信息（前端据此适配）。
 func (s *Server) getSource(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"source": s.src().Name(), "default_query": s.src().DefaultQuery()})
+	p := s.srcReady(c)
+	if p == nil {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"source": p.Name(), "default_query": p.DefaultQuery()})
 }
 
 // GET /api/v1/tickets?query=&max= — 候选票列表（入口），跨源 + 增强。
@@ -34,23 +38,27 @@ func (s *Server) listTickets(c *gin.Context) {
 			max = n
 		}
 	}
+	p := s.srcReady(c)
+	if p == nil {
+		return
+	}
 	ctx, cancel := contextWithTimeout(c, 30*time.Second)
 	defer cancel()
-	tickets, err := s.src().List(ctx, c.Query("query"), max)
+	tickets, err := p.List(ctx, c.Query("query"), max)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 	items := make([]ticketItem, 0, len(tickets))
 	for _, t := range tickets {
-		it := ticketItem{Ticket: t, SuggestedRepo: s.cfg().SuggestRepo(t.Title)}
+		it := ticketItem{Ticket: t, SuggestedRepo: s.cfg(c).SuggestRepo(t.Title)}
 		if existing, _ := s.st.FindBySource(t.Source, t.ID); existing != nil {
 			it.ExistingTaskID = existing.ID
 			it.ExistingTaskState = string(existing.State)
 		}
 		items = append(items, it)
 	}
-	c.JSON(http.StatusOK, gin.H{"source": s.src().Name(), "tickets": items})
+	c.JSON(http.StatusOK, gin.H{"source": p.Name(), "tickets": items})
 }
 
 // POST /api/v1/tasks — 起任务（202 + 任务资源；支持 Idempotency-Key）。
@@ -104,7 +112,7 @@ func (s *Server) getIssue(c *gin.Context) {
 	}
 	ctx, cancel := contextWithTimeout(c, 20*time.Second)
 	defer cancel()
-	iss, err := s.gh().GetIssue(ctx, s.cfg().Repos[t.Repo].GitHub, t.IssueNum)
+	iss, err := s.gh(c).GetIssue(ctx, s.cfg(c).Repos[t.Repo].GitHub, t.IssueNum)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -129,7 +137,7 @@ func (s *Server) editIssue(c *gin.Context) {
 	}
 	ctx, cancel := contextWithTimeout(c, 20*time.Second)
 	defer cancel()
-	if err := s.gh().UpdateIssue(ctx, s.cfg().Repos[t.Repo].GitHub, t.IssueNum, req.Title, req.Body); err != nil {
+	if err := s.gh(c).UpdateIssue(ctx, s.cfg(c).Repos[t.Repo].GitHub, t.IssueNum, req.Title, req.Body); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
@@ -204,9 +212,13 @@ func (s *Server) getTaskTicket(c *gin.Context) {
 	if t == nil {
 		return
 	}
+	p := s.srcReady(c)
+	if p == nil {
+		return
+	}
 	ctx, cancel := contextWithTimeout(c, 30*time.Second)
 	defer cancel()
-	tk, err := s.src().Get(ctx, t.SourceID)
+	tk, err := p.Get(ctx, t.SourceID)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -220,7 +232,7 @@ func (s *Server) getTaskLogs(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	dir := s.cfg().LogsDir()
+	dir := s.cfg(c).LogsDir()
 	logs := []gin.H{}
 	for _, label := range []string{"B", "C", "D"} {
 		b, err := os.ReadFile(filepath.Join(dir, t.ID+"."+label+".log"))

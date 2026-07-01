@@ -42,9 +42,47 @@ type settingsReq struct {
 	TaskTimeoutMin int               `json:"task_timeout_min"` // 0=不改
 }
 
+// saveTenantConfig 把该租户的非机密配置（source/default/status_map/repos）落库。
+func (s *Server) saveTenantConfig(c *gin.Context, cfg *config.Config) error {
+	j, err := cfg.ToTenantJSON()
+	if err != nil {
+		return err
+	}
+	return s.ids.PutTenantConfigJSON(c.GetString(ctxTenantID), j)
+}
+
+// saveTenantCreds 把凭据加密写入该租户密钥。无 MASTER_KEY（vault==nil）时拒绝：
+// 全局 .env 为所有租户共享，写进去即跨租户串凭据，故按租户存凭据强制要求 MASTER_KEY。
+func (s *Server) saveTenantCreds(c *gin.Context, creds map[string]string) error {
+	if s.vault == nil {
+		// 无凭据可写时（全空）视为无操作，放行；有非空凭据则要求 MASTER_KEY。
+		for _, v := range creds {
+			if v != "" {
+				return errNeedMasterKey
+			}
+		}
+		return nil
+	}
+	tid := c.GetString(ctxTenantID)
+	for k, v := range creds {
+		if v != "" {
+			if err := s.vault.SetTenant(tid, k, v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+var errNeedMasterKey = errText("按租户存储凭据需配置 MASTER_KEY（未配则凭据无法隔离）")
+
+type errText string
+
+func (e errText) Error() string { return string(e) }
+
 // GET /api/v1/settings
 func (s *Server) getSettings(c *gin.Context) {
-	cfg := s.cfg()
+	cfg := s.cfg(c)
 	c.JSON(http.StatusOK, settingsResp{
 		Source:         cfg.ActiveSource(),
 		JiraDomain:     cfg.Env["ATLASSIAN_DOMAIN"],
@@ -68,9 +106,9 @@ func (s *Server) putSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	cfg := s.cfg()
-	// 凭据/标量写 .env（空=不改）
-	env := map[string]string{
+	cfg := s.cfg(c).Clone() // 在副本上改，避免与编排器并发读缓存实例的 map
+	// 凭据按租户存（空=不改）
+	creds := map[string]string{
 		"ATLASSIAN_DOMAIN":   req.JiraDomain,
 		"ATLASSIAN_USERNAME": req.JiraUser,
 		"JIRA_PROJECT":       req.JiraProject,
@@ -78,19 +116,16 @@ func (s *Server) putSettings(c *gin.Context) {
 		"LINEAR_TEAM":        req.LinearTeam,
 		"LINEAR_API_KEY":     req.LinearAPIKey,
 		"GITHUB_TOKEN":       req.GithubToken,
-		"ADMIN_TOKEN":        req.AdminToken,
 	}
-	if req.MaxConcurrent > 0 {
-		env["MAX_CONCURRENT"] = strconv.Itoa(req.MaxConcurrent)
-	}
-	if req.TaskTimeoutMin > 0 {
-		env["TASK_TIMEOUT_MIN"] = strconv.Itoa(req.TaskTimeoutMin)
-	}
-	if err := cfg.SetEnv(env); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写 .env 失败：" + err.Error()})
+	if err := s.saveTenantCreds(c, creds); err != nil {
+		code := http.StatusInternalServerError
+		if err == errNeedMasterKey {
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, gin.H{"error": "写凭据失败：" + err.Error()})
 		return
 	}
-	// source / status_map 写 config.json
+	// source / status_map 写该租户配置
 	if req.Source != "" {
 		if req.Source != "jira" && req.Source != "linear" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "source 仅支持 jira / linear"})
@@ -101,11 +136,11 @@ func (s *Server) putSettings(c *gin.Context) {
 	if req.StatusMap != nil {
 		cfg.StatusMap = req.StatusMap
 	}
-	if err := cfg.SaveConfigJSON(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写 config.json 失败：" + err.Error()})
+	if err := s.saveTenantConfig(c, cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "写租户配置失败：" + err.Error()})
 		return
 	}
-	if err := s.deps.Reload(); err != nil {
+	if err := s.deps.Reload(c.GetString(ctxTenantID)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "重载失败：" + err.Error()})
 		return
 	}
@@ -118,14 +153,18 @@ func (s *Server) testConnection(c *gin.Context) {
 	defer cancel()
 	switch c.Param("kind") {
 	case "source":
-		items, err := s.src().List(ctx, "", 1)
+		p := s.srcReady(c)
+		if p == nil {
+			return
+		}
+		items, err := p.List(ctx, "", 1)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "detail": "票源连通，示例返回 " + strconv.Itoa(len(items)) + " 条"})
 	case "github":
-		login, err := s.gh().WhoAmI(ctx)
+		login, err := s.gh(c).WhoAmI(ctx)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
 			return
@@ -138,7 +177,7 @@ func (s *Server) testConnection(c *gin.Context) {
 
 // GET /api/v1/settings/repos
 func (s *Server) listSettingRepos(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"default": s.cfg().Default, "repos": s.cfg().RepoList()})
+	c.JSON(http.StatusOK, gin.H{"default": s.cfg(c).Default, "repos": s.cfg(c).RepoList()})
 }
 
 type repoReq struct {
@@ -164,11 +203,11 @@ func (s *Server) upsertRepo(c *gin.Context) {
 	// 校验可访问性（避免登记一个够不到的仓）
 	ctx, cancel := contextWithTimeout(c, 20*time.Second)
 	defer cancel()
-	if err := s.gh().RepoExists(ctx, req.GitHub); err != nil {
+	if err := s.gh(c).RepoExists(ctx, req.GitHub); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "无法访问该仓（检查地址/权限/GitHub token）：" + err.Error()})
 		return
 	}
-	cfg := s.cfg()
+	cfg := s.cfg(c).Clone()
 	repo := config.Repo{Name: req.Name, GitHub: req.GitHub, Path: req.Path, Match: req.Match, Base: req.Base}
 	switch {
 	case req.Enabled != nil:
@@ -182,11 +221,11 @@ func (s *Server) upsertRepo(c *gin.Context) {
 	if cfg.Default == "" {
 		cfg.Default = req.Name
 	}
-	if err := cfg.SaveConfigJSON(); err != nil {
+	if err := s.saveTenantConfig(c, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	_ = s.deps.Reload()
+	_ = s.deps.Reload(c.GetString(ctxTenantID))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -199,7 +238,7 @@ func (s *Server) setRepoEnabled(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	cfg := s.cfg()
+	cfg := s.cfg(c).Clone()
 	name := c.Param("name")
 	r, ok := cfg.Repos[name]
 	if !ok {
@@ -209,11 +248,11 @@ func (s *Server) setRepoEnabled(c *gin.Context) {
 	en := req.Enabled
 	r.Enabled = &en
 	cfg.Repos[name] = r
-	if err := cfg.SaveConfigJSON(); err != nil {
+	if err := s.saveTenantConfig(c, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	_ = s.deps.Reload()
+	_ = s.deps.Reload(c.GetString(ctxTenantID))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -224,7 +263,7 @@ func (s *Server) importRepos(c *gin.Context) {
 		Owner string `json:"owner"`
 	}
 	_ = c.ShouldBindJSON(&req)
-	cfg := s.cfg()
+	cfg := s.cfg(c).Clone()
 	ctx, cancel := contextWithTimeout(c, 60*time.Second)
 	defer cancel()
 
@@ -233,7 +272,7 @@ func (s *Server) importRepos(c *gin.Context) {
 		owner = inferOwner(cfg) // 从既有登记仓推断
 	}
 	if owner == "" {
-		login, err := s.gh().WhoAmI(ctx)
+		login, err := s.gh(c).WhoAmI(ctx)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "无法确定 owner，且获取 gh 登录账号失败：" + err.Error()})
 			return
@@ -241,7 +280,7 @@ func (s *Server) importRepos(c *gin.Context) {
 		owner = login
 	}
 
-	repos, err := s.gh().ListOwnerRepos(ctx, owner)
+	repos, err := s.gh(c).ListOwnerRepos(ctx, owner)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "拉取仓库列表失败（检查 owner/权限）：" + err.Error()})
 		return
@@ -263,11 +302,11 @@ func (s *Server) importRepos(c *gin.Context) {
 		added++
 	}
 	if added > 0 {
-		if err := cfg.SaveConfigJSON(); err != nil {
+		if err := s.saveTenantConfig(c, cfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		_ = s.deps.Reload()
+		_ = s.deps.Reload(c.GetString(ctxTenantID))
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "owner": owner, "found": len(repos), "added": added, "skipped": len(repos) - added})
 }
@@ -313,16 +352,16 @@ func uniqueRepoKey(cfg *config.Config, name string) string {
 
 // DELETE /api/v1/settings/repos/:name
 func (s *Server) deleteRepo(c *gin.Context) {
-	cfg := s.cfg()
+	cfg := s.cfg(c).Clone()
 	name := c.Param("name")
 	delete(cfg.Repos, name)
 	if cfg.Default == name {
 		cfg.Default = ""
 	}
-	if err := cfg.SaveConfigJSON(); err != nil {
+	if err := s.saveTenantConfig(c, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	_ = s.deps.Reload()
+	_ = s.deps.Reload(c.GetString(ctxTenantID))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
