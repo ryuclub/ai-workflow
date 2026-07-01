@@ -58,7 +58,7 @@ user-invokable: true
 
 ```markdown
 ## 关联工单
-- [PROJ-XXXX](https://<org>.atlassian.net/browse/PROJ-XXXX)
+- [PROJ-XXXX](https://your-domain.atlassian.net/browse/PROJ-XXXX)
 
 ## 变更概要
 <!-- 简要说明本次变更的目的和范围 -->
