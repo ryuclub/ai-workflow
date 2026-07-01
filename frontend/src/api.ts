@@ -80,6 +80,17 @@ export const getMyClaudeToken = () =>
 export const putMyClaudeToken = (token: string) =>
   send("PUT", "/api/v1/me/claude-token", { token }).then(j<{ ok: boolean; configured: boolean }>);
 
+// —— 成员管理（租户管理员）——
+export interface Member { user_id: string; email: string; role: string }
+export const listMembers = () =>
+  get("/api/v1/members").then(j<{ members: Member[] }>);
+export const addMember = (email: string, password: string, role: string) =>
+  send("POST", "/api/v1/members", { email, password, role }).then(j<{ ok: boolean }>);
+export const setMemberRole = (uid: string, role: string) =>
+  send("PUT", `/api/v1/members/${uid}/role`, { role }).then(j<{ ok: boolean }>);
+export const removeMember = (uid: string) =>
+  send("DELETE", `/api/v1/members/${uid}`).then(j<{ ok: boolean }>);
+
 export const getSource = () =>
   get("/api/v1/source").then(j<{ source: string; default_query: string }>);
 

@@ -10,7 +10,9 @@ import {
   upsertRepo,
 } from "../api";
 import type { Repo, SettingsView } from "../types";
+import { isAdmin } from "../api";
 import ClaudeToken from "./ClaudeToken";
+import Members from "./Members";
 
 // 设置各分区的锚点（电梯导航用）。
 const SECTIONS: [string, string][] = [
@@ -19,6 +21,7 @@ const SECTIONS: [string, string][] = [
   ["sec-linear", "Linear"],
   ["sec-github", "GitHub"],
   ["sec-claude", "Claude 令牌"],
+  ["sec-members", "成员"],
   ["sec-access", "访问控制"],
   ["sec-run", "运行"],
   ["sec-statusmap", "状态联动"],
@@ -228,6 +231,8 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
       </section>
 
       <ClaudeToken />
+
+      {isAdmin() && <Members />}
 
       <section id="sec-access" className="card">
         <h3>访问控制</h3>

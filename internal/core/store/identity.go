@@ -56,6 +56,8 @@ type IdentityStore interface {
 	CreateMembership(m *Membership) error
 	GetMembership(userID, tenantID string) (*Membership, error)
 	ListMembershipsByUser(userID string) ([]*Membership, error)
+	ListTenantMembers(tenantID string) ([]*Member, error)
+	DeleteMembership(userID, tenantID string) error
 	CreateSession(sess *Session) error
 	GetSession(token string) (*Session, error)
 	DeleteSession(token string) error
@@ -136,6 +138,42 @@ func (s *SQLite) GetMembership(userID, tenantID string) (*Membership, error) {
 		return nil, nil
 	}
 	return &m, err
+}
+
+// Member 是某租户内的成员视图（用户 + 角色），供成员管理列表。
+type Member struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   Role   `json:"role"`
+}
+
+// ListTenantMembers 返回某租户全部成员（join users 取邮箱），按邮箱排序。
+func (s *SQLite) ListTenantMembers(tenantID string) ([]*Member, error) {
+	rows, err := s.db.Query(
+		`SELECT u.id, u.email, m.role FROM memberships m
+		 JOIN users u ON u.id = m.user_id
+		 WHERE m.tenant_id=? ORDER BY u.email`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Member
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.UserID, &m.Email, &m.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, &m)
+	}
+	return out, rows.Err()
+}
+
+// DeleteMembership 移除某用户在某租户的成员资格（不删用户本身）。
+func (s *SQLite) DeleteMembership(userID, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM memberships WHERE user_id=? AND tenant_id=?`, userID, tenantID)
+	return err
 }
 
 func (s *SQLite) ListMembershipsByUser(userID string) ([]*Membership, error) {
