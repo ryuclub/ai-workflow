@@ -30,6 +30,9 @@ func checkPassword(hash, pw string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
 }
 
+// dummyHash 用于用户不存在时仍走一次 bcrypt，抹平「存在/不存在」的时延差，防邮箱枚举。
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("x"), bcrypt.DefaultCost)
+
 // requireAuth 校验会话 token（Bearer 或 ?token=，后者供 SSE），解析 user+tenant+role 注入 ctx。
 func (s *Server) requireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -87,7 +90,12 @@ func (s *Server) login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if u == nil || !checkPassword(u.PasswordHash, req.Password) {
+	if u == nil {
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password)) // 抹平时延，防枚举
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "邮箱或密码错误"})
+		return
+	}
+	if !checkPassword(u.PasswordHash, req.Password) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "邮箱或密码错误"})
 		return
 	}

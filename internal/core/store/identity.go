@@ -137,7 +137,7 @@ func (s *SQLite) GetMembership(userID, tenantID string) (*Membership, error) {
 }
 
 func (s *SQLite) ListMembershipsByUser(userID string) ([]*Membership, error) {
-	rows, err := s.db.Query(`SELECT user_id,tenant_id,role FROM memberships WHERE user_id=?`, userID)
+	rows, err := s.db.Query(`SELECT user_id,tenant_id,role FROM memberships WHERE user_id=? ORDER BY tenant_id`, userID)
 	if err != nil {
 		return nil, err
 	}
