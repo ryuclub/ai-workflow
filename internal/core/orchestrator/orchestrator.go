@@ -121,7 +121,7 @@ func (o *Orchestrator) Cancel(taskID string) error {
 func (o *Orchestrator) Pipeline() pipeline.Pipeline { return o.pl }
 
 // StartTask 校验入参、做幂等、创建任务并异步启动 B。sourceID 为活跃源的工单标识，title 为票标题快照。
-func (o *Orchestrator) StartTask(sourceID, repo, title, idem string) (*store.Task, error) {
+func (o *Orchestrator) StartTask(tenantID, createdBy, sourceID, repo, title, idem string) (*store.Task, error) {
 	src := o.deps.Provider()
 	if !src.ValidateID(sourceID) {
 		return nil, fmt.Errorf("非法 %s 标识: %q", src.Name(), sourceID)
@@ -137,6 +137,8 @@ func (o *Orchestrator) StartTask(sourceID, repo, title, idem string) (*store.Tas
 	now := time.Now()
 	t := &store.Task{
 		ID:         uuid.NewString(),
+		TenantID:   tenantID,
+		CreatedBy:  createdBy,
 		Source:     src.Name(),
 		SourceID:   sourceID,
 		Title:      title,

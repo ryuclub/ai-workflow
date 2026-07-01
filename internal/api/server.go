@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/ryuclub/ai-workflow/internal/core/config"
 	"github.com/ryuclub/ai-workflow/internal/core/events"
@@ -29,14 +28,15 @@ type Deps interface {
 type Server struct {
 	deps   Deps
 	st     store.Store
+	ids    store.IdentityStore
 	bus    *events.Bus
 	orch   *orchestrator.Orchestrator
 	health *healthState
 }
 
 // NewServer 组装依赖。deps 在每次取用时返回当前生效配置/票源/客户端。
-func NewServer(deps Deps, st store.Store, bus *events.Bus, orch *orchestrator.Orchestrator) *Server {
-	return &Server{deps: deps, st: st, bus: bus, orch: orch, health: newHealth()}
+func NewServer(deps Deps, st store.Store, ids store.IdentityStore, bus *events.Bus, orch *orchestrator.Orchestrator) *Server {
+	return &Server{deps: deps, st: st, ids: ids, bus: bus, orch: orch, health: newHealth()}
 }
 
 func (s *Server) cfg() *config.Config  { return s.deps.Config() }
@@ -55,9 +55,21 @@ func (s *Server) Router() *gin.Engine {
 	}
 	r.Use(cors.New(corsCfg))
 
-	// 鉴权：设了 admin token 才强制（Bearer）；未设则开放（纯 localhost 起步）。
-	v1 := r.Group("/api/v1", s.requireAdmin())
+	// 公开：登录与鉴权探测（不暴露数据）。
+	pub := r.Group("/api/v1")
 	{
+		pub.POST("/auth/login", s.login)
+		pub.GET("/auth/status", func(c *gin.Context) {
+			n, _ := s.ids.CountUsers()
+			c.JSON(http.StatusOK, gin.H{"auth_required": true, "bootstrapped": n > 0})
+		})
+	}
+
+	// 鉴权：一律要求登录会话（Bearer 或 ?token=）。
+	v1 := r.Group("/api/v1", s.requireAuth())
+	{
+		v1.POST("/auth/logout", s.logout)
+		v1.GET("/auth/me", s.me)
 		v1.GET("/repos", s.listRepos)
 		v1.GET("/pipeline", s.getPipeline)
 		v1.GET("/source", s.getSource)
@@ -78,20 +90,16 @@ func (s *Server) Router() *gin.Engine {
 		// 健康面板
 		v1.GET("/health", s.getHealth)
 		v1.POST("/health/check", s.checkHealth)
-		// 设置中心
+		// 设置中心：读放行给成员，写/连测/仓管理需租户管理员。
 		v1.GET("/settings", s.getSettings)
-		v1.PUT("/settings", s.putSettings)
-		v1.POST("/settings/test/:kind", s.testConnection)
+		v1.PUT("/settings", s.requireAdminRole(), s.putSettings)
+		v1.POST("/settings/test/:kind", s.requireAdminRole(), s.testConnection)
 		v1.GET("/settings/repos", s.listSettingRepos)
-		v1.PUT("/settings/repos", s.upsertRepo)
-		v1.POST("/settings/repos/import", s.importRepos)
-		v1.PUT("/settings/repos/:name/enabled", s.setRepoEnabled)
-		v1.DELETE("/settings/repos/:name", s.deleteRepo)
+		v1.PUT("/settings/repos", s.requireAdminRole(), s.upsertRepo)
+		v1.POST("/settings/repos/import", s.requireAdminRole(), s.importRepos)
+		v1.PUT("/settings/repos/:name/enabled", s.requireAdminRole(), s.setRepoEnabled)
+		v1.DELETE("/settings/repos/:name", s.requireAdminRole(), s.deleteRepo)
 	}
-	// 鉴权探测：前端据此判断是否需要登录（不暴露任何数据）。
-	r.GET("/api/v1/auth/status", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"auth_required": s.cfg().AdminToken() != ""})
-	})
 
 	// 内部接口：仅 skill 回传事件，token 校验，不公开、不版本化。
 	in := r.Group("/internal", s.requireInternalToken())
@@ -101,27 +109,6 @@ func (s *Server) Router() *gin.Engine {
 
 	s.mountFrontend(r)
 	return r
-}
-
-// requireAdmin 校验公共 API 的 admin token：设了才强制。
-// 支持 Authorization: Bearer 或 ?token=（SSE/EventSource 无法设自定义头，故留 query 口子）。
-func (s *Server) requireAdmin() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		want := s.cfg().AdminToken()
-		if want == "" {
-			c.Next()
-			return
-		}
-		got := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if got == "" {
-			got = c.Query("token")
-		}
-		if got != want {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			return
-		}
-		c.Next()
-	}
 }
 
 // requireInternalToken 校验 /internal 的共享 token。
