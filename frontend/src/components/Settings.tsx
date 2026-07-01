@@ -10,6 +10,7 @@ import {
   upsertRepo,
 } from "../api";
 import type { Repo, SettingsView } from "../types";
+import ClaudeToken from "./ClaudeToken";
 
 // 设置各分区的锚点（电梯导航用）。
 const SECTIONS: [string, string][] = [
@@ -17,6 +18,7 @@ const SECTIONS: [string, string][] = [
   ["sec-jira", "JIRA"],
   ["sec-linear", "Linear"],
   ["sec-github", "GitHub"],
+  ["sec-claude", "Claude 令牌"],
   ["sec-access", "访问控制"],
   ["sec-run", "运行"],
   ["sec-statusmap", "状态联动"],
@@ -225,10 +227,12 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
         <button className="mini" disabled={busy} onClick={() => test("github")}>测试 GitHub 连接</button>
       </section>
 
+      <ClaudeToken />
+
       <section id="sec-access" className="card">
         <h3>访问控制</h3>
         <label>Admin Token<input type="password" value={f.admin_token ?? ""} onChange={(e) => set("admin_token", e.target.value)} placeholder={mask(s.admin_token_set)} /></label>
-        <div className="hint">设置后公共 API 将要求登录（Bearer）。留空保持现状；要关闭需手动清空 .env 的 ADMIN_TOKEN。</div>
+        <div className="hint">（已弃用）鉴权现由用户账号 + 会话接管；此项不再控制登录，仅保留兼容。</div>
       </section>
 
       <section id="sec-run" className="card">
