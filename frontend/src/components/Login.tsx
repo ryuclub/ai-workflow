@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { clearToken, getSource, setToken } from "../api";
+import { login, setRole, setToken } from "../api";
 
-// 鉴权开启时的登录：输入 admin token，校验通过后进入。
+// 邮箱+密码登录：校验通过后存会话 token 与角色，进入。
 export default function Login({ onOk }: { onOk: () => void }) {
-  const [t, setT] = useState("");
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -11,13 +12,13 @@ export default function Login({ onOk }: { onOk: () => void }) {
     e.preventDefault();
     setBusy(true);
     setErr("");
-    setToken(t.trim());
     try {
-      await getSource(); // 用受保护接口验证 token
+      const r = await login(email.trim(), pw);
+      setToken(r.token);
+      setRole(r.role);
       onOk();
-    } catch {
-      clearToken(); // 无效 token 不留存
-      setErr("Token 无效");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "登录失败");
     } finally {
       setBusy(false);
     }
@@ -27,10 +28,24 @@ export default function Login({ onOk }: { onOk: () => void }) {
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
         <h2>AI 工作流流水线</h2>
-        <p className="muted">该实例已启用访问控制，请输入 Admin Token</p>
-        <input type="password" autoFocus value={t} onChange={(e) => setT(e.target.value)} placeholder="Admin Token" />
+        <p className="muted">请使用邮箱与密码登录</p>
+        <input
+          type="email"
+          autoFocus
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="邮箱"
+        />
+        <input
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          placeholder="密码"
+        />
         {err && <div className="err">{err}</div>}
-        <button className="primary" disabled={busy || !t.trim()}>进入</button>
+        <button className="primary" disabled={busy || !email.trim() || !pw}>
+          {busy ? "登录中…" : "登录"}
+        </button>
       </form>
     </div>
   );
