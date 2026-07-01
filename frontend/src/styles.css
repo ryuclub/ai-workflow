@@ -37,7 +37,7 @@ body {
 .ticket-meta .status { font-size: 11px; color: #9aa0a6; flex: 1; }
 .ticket select { font-size: 12px; padding: 2px; }
 
-.badge { background: #eef0f3; border-radius: 4px; padding: 1px 6px; font-size: 11px; font-family: monospace; }
+.badge { background: #eef0f3; border-radius: 4px; padding: 1px 6px; font-size: 11px; font-family: monospace; white-space: nowrap; flex-shrink: 0; }
 .seq { font-weight: 700; color: #f5a623; font-family: monospace; margin-right: 6px; }
 .repo { font-size: 12px; color: #5f6368; }
 
