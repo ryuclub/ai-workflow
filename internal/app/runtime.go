@@ -9,17 +9,37 @@ import (
 	"github.com/ryuclub/ai-workflow/internal/core/config"
 	"github.com/ryuclub/ai-workflow/internal/core/github"
 	"github.com/ryuclub/ai-workflow/internal/core/repomanager"
+	"github.com/ryuclub/ai-workflow/internal/core/secret"
 	"github.com/ryuclub/ai-workflow/internal/core/source"
 )
 
 // Runtime 实现 orchestrator.Deps / runner.Env / api.Deps：取用时返回当前实例，Reload 后切换。
 type Runtime struct {
-	root string
-	mu   sync.RWMutex
-	cfg  *config.Config
-	prov source.Provider
-	gh   *github.Client
-	repo *repomanager.Manager
+	root  string
+	mu    sync.RWMutex
+	cfg   *config.Config
+	prov  source.Provider
+	gh    *github.Client
+	repo  *repomanager.Manager
+	vault *secret.Vault // 凭据/登录态令牌解析；未配 MASTER_KEY 时为 nil
+}
+
+// SetVault 注入凭据保险箱（main 打开 store 后装配）。
+func (rt *Runtime) SetVault(v *secret.Vault) {
+	rt.mu.Lock()
+	rt.vault = v
+	rt.mu.Unlock()
+}
+
+// ClaudeToken 实现 runner.Env：两级解析任务应使用的登录态令牌；未配保险箱返回空（回落宿主登录态）。
+func (rt *Runtime) ClaudeToken(tenantID, userID string) string {
+	rt.mu.RLock()
+	v := rt.vault
+	rt.mu.RUnlock()
+	if v == nil {
+		return ""
+	}
+	return v.ResolveClaudeToken(tenantID, userID)
 }
 
 // NewRuntime 加载配置并完成首次装配。

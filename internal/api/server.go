@@ -10,6 +10,7 @@ import (
 	"github.com/ryuclub/ai-workflow/internal/core/events"
 	"github.com/ryuclub/ai-workflow/internal/core/github"
 	"github.com/ryuclub/ai-workflow/internal/core/orchestrator"
+	"github.com/ryuclub/ai-workflow/internal/core/secret"
 	"github.com/ryuclub/ai-workflow/internal/core/source"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 	"github.com/gin-contrib/cors"
@@ -29,14 +30,15 @@ type Server struct {
 	deps   Deps
 	st     store.Store
 	ids    store.IdentityStore
+	vault  *secret.Vault // 凭据保险箱；未配 MASTER_KEY 时为 nil
 	bus    *events.Bus
 	orch   *orchestrator.Orchestrator
 	health *healthState
 }
 
 // NewServer 组装依赖。deps 在每次取用时返回当前生效配置/票源/客户端。
-func NewServer(deps Deps, st store.Store, ids store.IdentityStore, bus *events.Bus, orch *orchestrator.Orchestrator) *Server {
-	return &Server{deps: deps, st: st, ids: ids, bus: bus, orch: orch, health: newHealth()}
+func NewServer(deps Deps, st store.Store, ids store.IdentityStore, vault *secret.Vault, bus *events.Bus, orch *orchestrator.Orchestrator) *Server {
+	return &Server{deps: deps, st: st, ids: ids, vault: vault, bus: bus, orch: orch, health: newHealth()}
 }
 
 func (s *Server) cfg() *config.Config  { return s.deps.Config() }
@@ -70,6 +72,11 @@ func (s *Server) Router() *gin.Engine {
 	{
 		v1.POST("/auth/logout", s.logout)
 		v1.GET("/auth/me", s.me)
+		// Claude 登录态令牌：租户共享（管理员）+ 个人（本人）。
+		v1.GET("/settings/claude-token", s.requireAdminRole(), s.getTenantClaudeToken)
+		v1.PUT("/settings/claude-token", s.requireAdminRole(), s.putTenantClaudeToken)
+		v1.GET("/me/claude-token", s.getMyClaudeToken)
+		v1.PUT("/me/claude-token", s.putMyClaudeToken)
 		v1.GET("/repos", s.listRepos)
 		v1.GET("/pipeline", s.getPipeline)
 		v1.GET("/source", s.getSource)
