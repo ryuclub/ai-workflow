@@ -87,6 +87,11 @@ func (s *Server) Router() *gin.Engine {
 		v1.PUT("/settings/claude-token", s.requireAdminRole(), s.putTenantClaudeToken)
 		v1.GET("/me/claude-token", s.getMyClaudeToken)
 		v1.PUT("/me/claude-token", s.putMyClaudeToken)
+		// 成员管理（租户管理员）。
+		v1.GET("/members", s.requireAdminRole(), s.listMembers)
+		v1.POST("/members", s.requireAdminRole(), s.addMember)
+		v1.PUT("/members/:uid/role", s.requireAdminRole(), s.setMemberRole)
+		v1.DELETE("/members/:uid", s.requireAdminRole(), s.removeMember)
 		v1.GET("/repos", s.listRepos)
 		v1.GET("/pipeline", s.getPipeline)
 		v1.GET("/source", s.getSource)
