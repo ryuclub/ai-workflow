@@ -38,12 +38,16 @@ func main() {
 	if n, err := st.ReconcileInterrupted(); err == nil && n > 0 {
 		log.Printf("启动对账：%d 个上次残留的运行中任务已标为待裁决", n)
 	}
+	// 无用户时据环境变量 seed 首个租户+管理员（平台手动开通入口）。
+	if err := api.SeedBootstrap(st, os.Getenv("WF_BOOTSTRAP_EMAIL"), os.Getenv("WF_BOOTSTRAP_PASSWORD"), os.Getenv("WF_BOOTSTRAP_TENANT")); err != nil {
+		log.Fatalf("初始化管理员失败: %v", err)
+	}
 
 	bus := events.NewBus(st, events.NewSlackSink(cfg.SlackWebhook()))
 	orch := orchestrator.New(rt, st, bus, runner.NewClaude(rt))
 	orch.StartPoller(context.Background()) // 后台轮询 PR 审查决议，驱动修订循环
 
-	srv := api.NewServer(rt, st, bus, orch)
+	srv := api.NewServer(rt, st, st, bus, orch)
 	addr := cfg.Host() + ":" + strconv.Itoa(cfg.Port())
 	authOn := "off"
 	if cfg.AdminToken() != "" {

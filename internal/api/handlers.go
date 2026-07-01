@@ -60,7 +60,7 @@ func (s *Server) startTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	t, err := s.orch.StartTask(req.SourceID, req.Repo, req.Title, c.GetHeader("Idempotency-Key"))
+	t, err := s.orch.StartTask(c.GetString(ctxTenantID), c.GetString(ctxUserID), req.SourceID, req.Repo, req.Title, c.GetHeader("Idempotency-Key"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -68,9 +68,9 @@ func (s *Server) startTask(c *gin.Context) {
 	c.JSON(http.StatusAccepted, t)
 }
 
-// GET /api/v1/tasks — 任务列表。
+// GET /api/v1/tasks — 任务列表（仅当前租户）。
 func (s *Server) listTasks(c *gin.Context) {
-	tasks, err := s.st.ListTasks()
+	tasks, err := s.st.ListTasksByTenant(c.GetString(ctxTenantID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -310,7 +310,8 @@ func (s *Server) mustTask(c *gin.Context) *store.Task {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return nil
 	}
-	if t == nil {
+	// 跨租户不可见：非本租户任务一律当作不存在（防越权枚举）。
+	if t == nil || t.TenantID != c.GetString(ctxTenantID) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return nil
 	}
