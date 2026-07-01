@@ -19,10 +19,10 @@ import (
 
 // Deps 提供随设置热重载而变的依赖；Reload 在设置变更后重建。
 type Deps interface {
-	Config() *config.Config
-	Provider() source.Provider
-	Github() *github.Client
-	Reload() error
+	Config(tenantID string) *config.Config    // tenantID 为空返回全局模板（运行期操作键）
+	Provider(tenantID string) source.Provider // 按租户票源
+	Github(tenantID string) *github.Client    // 按租户 GitHub 客户端
+	Reload(tenantID string) error             // 使某租户配置缓存失效；空=重载全局模板
 }
 
 // Server 持有 API 处理器所需的 core 依赖。
@@ -41,9 +41,10 @@ func NewServer(deps Deps, st store.Store, ids store.IdentityStore, vault *secret
 	return &Server{deps: deps, st: st, ids: ids, vault: vault, bus: bus, orch: orch, health: newHealth()}
 }
 
-func (s *Server) cfg() *config.Config  { return s.deps.Config() }
-func (s *Server) src() source.Provider { return s.deps.Provider() }
-func (s *Server) gh() *github.Client   { return s.deps.Github() }
+// cfg/src/gh 按当前会话租户解析。tid 从 requireAuth 注入的 ctx 取。
+func (s *Server) cfg(c *gin.Context) *config.Config  { return s.deps.Config(c.GetString(ctxTenantID)) }
+func (s *Server) src(c *gin.Context) source.Provider { return s.deps.Provider(c.GetString(ctxTenantID)) }
+func (s *Server) gh(c *gin.Context) *github.Client   { return s.deps.Github(c.GetString(ctxTenantID)) }
 
 // Router 构建 gin 引擎并挂载公共(v1) + 内部路由。
 func (s *Server) Router() *gin.Engine {
@@ -120,7 +121,7 @@ func (s *Server) Router() *gin.Engine {
 
 // requireInternalToken 校验 /internal 的共享 token。
 func (s *Server) requireInternalToken() gin.HandlerFunc {
-	want := s.cfg().InternalToken()
+	want := s.deps.Config("").InternalToken()
 	return func(c *gin.Context) {
 		if want == "" || c.GetHeader("X-Internal-Token") != want {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "bad internal token"})
@@ -132,7 +133,7 @@ func (s *Server) requireInternalToken() gin.HandlerFunc {
 
 // mountFrontend 在前端构建产物存在时托管 SPA（dev 模式由 Vite 单独跑）。
 func (s *Server) mountFrontend(r *gin.Engine) {
-	dist := filepath.Join(s.cfg().Root, "frontend", "dist")
+	dist := filepath.Join(s.deps.Config("").Root, "frontend", "dist")
 	if _, err := os.Stat(filepath.Join(dist, "index.html")); err != nil {
 		return
 	}

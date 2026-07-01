@@ -1,4 +1,4 @@
-// Package app 装配运行时：持有当前生效的配置/票源/客户端，支持设置热重载。
+// Package app 装配运行时：持有全局模板配置，并按租户解析出各自的配置/票源/客户端。
 package app
 
 import (
@@ -13,25 +13,129 @@ import (
 	"github.com/ryuclub/ai-workflow/internal/core/source"
 )
 
-// Runtime 实现 orchestrator.Deps / runner.Env / api.Deps：取用时返回当前实例，Reload 后切换。
+// TenantConfigStore 提供某租户的非机密配置 JSON（source/default/status_map/repos）。
+type TenantConfigStore interface {
+	GetTenantConfigJSON(tenantID string) (string, error)
+}
+
+// tenantRT 是某租户解析出的运行期实例。
+type tenantRT struct {
+	cfg  *config.Config
+	prov source.Provider
+	gh   *github.Client
+	repo *repomanager.Manager
+}
+
+// Runtime 持有全局模板（base），并按租户懒构建 + 缓存各自的运行期实例。
+// 实现 orchestrator.Deps / runner.Env / api.Deps：取用时按 tenantID 返回对应实例。
 type Runtime struct {
 	root  string
 	mu    sync.RWMutex
-	cfg   *config.Config
-	prov  source.Provider
-	gh    *github.Client
-	repo  *repomanager.Manager
-	vault *secret.Vault // 凭据/登录态令牌解析；未配 MASTER_KEY 时为 nil
+	base  *config.Config    // 全局模板：运行期操作键（PORT/WORKTREE_BASE…）+ 默认 repos/source
+	vault *secret.Vault     // 按租户凭据；nil=未配 MASTER_KEY（回落全局 .env 凭据）
+	cfgSt TenantConfigStore // 按租户配置 JSON
+	cache map[string]*tenantRT
 }
 
-// SetVault 注入凭据保险箱（main 打开 store 后装配）。
-func (rt *Runtime) SetVault(v *secret.Vault) {
+// NewRuntime 加载全局模板并完成首次装配。
+func NewRuntime(root string) (*Runtime, error) {
+	rt := &Runtime{root: root, cache: map[string]*tenantRT{}}
+	if err := rt.ReloadBase(); err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
+// SetVault / SetConfigStore 在 main 打开 store 后注入（构造租户级配置所需）。
+func (rt *Runtime) SetVault(v *secret.Vault)            { rt.mu.Lock(); rt.vault = v; rt.mu.Unlock() }
+func (rt *Runtime) SetConfigStore(s TenantConfigStore)  { rt.mu.Lock(); rt.cfgSt = s; rt.mu.Unlock() }
+
+// ReloadBase 重读全局模板文件并清空所有租户缓存（下次取用时按新模板重建）。
+func (rt *Runtime) ReloadBase() error {
+	base, err := config.Load(rt.root)
+	if err != nil {
+		return err
+	}
 	rt.mu.Lock()
-	rt.vault = v
+	rt.base = base
+	rt.cache = map[string]*tenantRT{}
 	rt.mu.Unlock()
+	return nil
 }
 
-// ClaudeToken 实现 runner.Env：两级解析任务应使用的登录态令牌；未配保险箱返回空（回落宿主登录态）。
+// Reload 使某租户缓存失效（下次取用时按最新配置/凭据重建）。tenantID 为空则等价 ReloadBase。
+func (rt *Runtime) Reload(tenantID string) error {
+	if tenantID == "" {
+		return rt.ReloadBase()
+	}
+	rt.mu.Lock()
+	delete(rt.cache, tenantID)
+	rt.mu.Unlock()
+	return nil
+}
+
+// resolve 返回租户运行期实例（懒构建 + 缓存）。tenantID 为空返回全局模板实例（运行期操作键用）。
+func (rt *Runtime) resolve(tenantID string) *tenantRT {
+	rt.mu.RLock()
+	if t := rt.cache[tenantID]; t != nil {
+		rt.mu.RUnlock()
+		return t
+	}
+	base, vault, cfgSt := rt.base, rt.vault, rt.cfgSt
+	rt.mu.RUnlock()
+
+	if tenantID == "" {
+		return &tenantRT{cfg: base} // 全局模板：仅供读运行期操作键，不构造票源/客户端
+	}
+
+	// 该租户配置 JSON（无则继承 base 模板）。
+	var tenantJSON string
+	if cfgSt != nil {
+		tenantJSON, _ = cfgSt.GetTenantConfigJSON(tenantID)
+	}
+	// 该租户凭据：有 vault 取加密凭据；否则回落全局 .env（单机开发）。
+	creds := map[string]string{}
+	for _, k := range config.CredentialKeys {
+		if vault != nil {
+			if v := vault.GetTenant(tenantID, k); v != "" {
+				creds[k] = v
+			}
+		} else if v := base.Env[k]; v != "" {
+			creds[k] = v
+		}
+	}
+	cfg, err := config.FromTenant(base, tenantID, tenantJSON, creds)
+	if err != nil {
+		cfg, _ = config.FromTenant(base, tenantID, "", creds) // 坏 JSON 回落模板，不致命
+	}
+	prov, _ := buildProvider(cfg) // 源构造失败留 nil，由上层处理
+	t := &tenantRT{
+		cfg:  cfg,
+		prov: prov,
+		gh:   github.NewWithToken(cfg.GithubToken()),
+		repo: repomanager.New(cfg.ReposDir(), cfg.GithubToken()),
+	}
+	rt.mu.Lock()
+	rt.cache[tenantID] = t
+	rt.mu.Unlock()
+	return t
+}
+
+// Config / Provider / Github 按租户返回。tenantID 为空返回全局模板配置（运行期操作键）。
+func (rt *Runtime) Config(tenantID string) *config.Config    { return rt.resolve(tenantID).cfg }
+func (rt *Runtime) Provider(tenantID string) source.Provider { return rt.resolve(tenantID).prov }
+func (rt *Runtime) Github(tenantID string) *github.Client    { return rt.resolve(tenantID).gh }
+
+// RepoPath 返回某租户自管的主仓克隆路径（按 GitHub 地址；克隆目录已按租户隔离）。
+func (rt *Runtime) RepoPath(ctx context.Context, tenantID, githubFull string) (string, error) {
+	rm := rt.resolve(tenantID).repo
+	if rm == nil {
+		return "", fmt.Errorf("租户 %q 无仓管理器", tenantID)
+	}
+	return rm.EnsureLocal(ctx, githubFull)
+}
+
+// ClaudeToken 两级解析任务应使用的登录态令牌；未配保险箱返回空（回落宿主登录态）。
 func (rt *Runtime) ClaudeToken(tenantID, userID string) string {
 	rt.mu.RLock()
 	v := rt.vault
@@ -40,47 +144,6 @@ func (rt *Runtime) ClaudeToken(tenantID, userID string) string {
 		return ""
 	}
 	return v.ResolveClaudeToken(tenantID, userID)
-}
-
-// NewRuntime 加载配置并完成首次装配。
-func NewRuntime(root string) (*Runtime, error) {
-	rt := &Runtime{root: root}
-	if err := rt.Reload(); err != nil {
-		return nil, err
-	}
-	return rt, nil
-}
-
-// Reload 重读配置文件并重建票源/客户端/仓管理器。
-func (rt *Runtime) Reload() error {
-	cfg, err := config.Load(rt.root)
-	if err != nil {
-		return err
-	}
-	prov, err := buildProvider(cfg)
-	if err != nil {
-		return err
-	}
-	rt.mu.Lock()
-	rt.cfg = cfg
-	rt.prov = prov
-	rt.gh = github.NewWithToken(cfg.GithubToken())
-	rt.repo = repomanager.New(cfg.ReposDir(), cfg.GithubToken())
-	rt.mu.Unlock()
-	return nil
-}
-
-func (rt *Runtime) Config() *config.Config    { rt.mu.RLock(); defer rt.mu.RUnlock(); return rt.cfg }
-func (rt *Runtime) Provider() source.Provider { rt.mu.RLock(); defer rt.mu.RUnlock(); return rt.prov }
-func (rt *Runtime) Github() *github.Client    { rt.mu.RLock(); defer rt.mu.RUnlock(); return rt.gh }
-
-// RepoPath 返回控制面自管的「主仓」克隆路径（按 GitHub 地址）。
-// 一律自管，不使用开发者本地工作目录——任务在主仓之外的独立 worktree 里干活，绝不碰主仓工作树。
-func (rt *Runtime) RepoPath(ctx context.Context, githubFull string) (string, error) {
-	rt.mu.RLock()
-	rm := rt.repo
-	rt.mu.RUnlock()
-	return rm.EnsureLocal(ctx, githubFull)
 }
 
 // buildProvider 据配置实例化活跃票源（jira / linear，二选一）。

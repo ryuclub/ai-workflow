@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ryuclub/ai-workflow/internal/core/config"
+	"github.com/ryuclub/ai-workflow/internal/core/secret"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -165,9 +167,10 @@ func (s *Server) me(c *gin.Context) {
 	})
 }
 
-// SeedBootstrap 在无任何用户时，据环境变量建首个租户 + 管理员（平台手动开通入口）。
+// SeedBootstrap 在无任何用户时，据环境变量建首个租户 + 管理员（平台手动开通入口），
+// 并把现有全局配置（config.json/.env）迁进该租户，使既有单租户部署平滑过渡。
 // WF_BOOTSTRAP_EMAIL / WF_BOOTSTRAP_PASSWORD / WF_BOOTSTRAP_TENANT。
-func SeedBootstrap(ids store.IdentityStore, email, password, tenantName string) error {
+func SeedBootstrap(ids store.IdentityStore, base *config.Config, vault *secret.Vault, email, password, tenantName string) error {
 	n, err := ids.CountUsers()
 	if err != nil {
 		return err
@@ -198,6 +201,19 @@ func SeedBootstrap(ids store.IdentityStore, email, password, tenantName string) 
 	if err := ids.CreateMembership(&store.Membership{UserID: user.ID, TenantID: tenant.ID, Role: store.RoleAdmin}); err != nil {
 		return err
 	}
-	log.Printf("已创建首个租户 %q 与管理员 %s", tenantName, email)
+	// 迁移：把现有全局 config.json 存为该租户配置；有 vault 时把 .env 凭据迁进该租户密钥。
+	if base != nil {
+		if j, err := base.ToTenantJSON(); err == nil {
+			_ = ids.PutTenantConfigJSON(tenant.ID, j)
+		}
+		if vault != nil {
+			for _, k := range config.CredentialKeys {
+				if v := base.Env[k]; v != "" {
+					_ = vault.SetTenant(tenant.ID, k, v)
+				}
+			}
+		}
+	}
+	log.Printf("已创建首个租户 %q 与管理员 %s（已迁移现有配置）", tenantName, email)
 	return nil
 }

@@ -31,8 +31,17 @@ type Config struct {
 	Default   string            `json:"default"`    // 标题无信号时的默认仓
 	StatusMap map[string]string `json:"status_map"` // 任务态→票源流转名（空=不联动；写错会污染真实票，故默认关闭）
 	Repos     map[string]Repo   `json:"repos"`
-	Env       map[string]string `json:"-"` // 来自 .env，承载凭据/端口/token 等
+	Env       map[string]string `json:"-"` // 来自 .env / 租户密钥，承载凭据/端口/token 等
 	Root      string            `json:"-"` // 仓根目录（解析相对路径用）
+	TenantID  string            `json:"-"` // 非空=按租户解析出的配置；克隆/worktree/日志目录据此命名空间隔离
+}
+
+// tenantSub 在 TenantID 非空时把路径下沉到 <base>/<tenantID>，实现按租户隔离。
+func (c *Config) tenantSub(base string) string {
+	if c.TenantID == "" {
+		return base
+	}
+	return filepath.Join(base, c.TenantID)
 }
 
 // Load 读取仓根下的 config.json 与 .claude/ai-workflow/.env。
@@ -199,8 +208,8 @@ func (c *Config) SuggestRepo(title string) string {
 // ClaudeBin 是 claude CLI 可执行名。
 func (c *Config) ClaudeBin() string { return c.get("CLAUDE_BIN", "claude") }
 
-// WorktreeBase 是各任务临时 worktree 的根目录。
-func (c *Config) WorktreeBase() string { return c.get("WORKTREE_BASE", "/tmp/wf-worktrees") }
+// WorktreeBase 是各任务临时 worktree 的根目录（按租户隔离）。
+func (c *Config) WorktreeBase() string { return c.tenantSub(c.get("WORKTREE_BASE", "/tmp/wf-worktrees")) }
 
 // SlackWebhook 为空则不发 Slack。
 func (c *Config) SlackWebhook() string { return c.get("SLACK_WEBHOOK_URL", "") }
@@ -221,14 +230,14 @@ func (c *Config) GithubToken() string { return c.get("GITHUB_TOKEN", "") }
 // AdminToken 设了则启用公共 API 鉴权（Bearer）。
 func (c *Config) AdminToken() string { return c.get("ADMIN_TOKEN", "") }
 
-// ReposDir 是自管克隆的根目录。
+// ReposDir 是自管克隆的根目录（按租户隔离，避免跨司串仓）。
 func (c *Config) ReposDir() string {
-	return c.get("REPOS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "repos"))
+	return c.tenantSub(c.get("REPOS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "repos")))
 }
 
-// LogsDir 是各任务 claude 输出日志目录。
+// LogsDir 是各任务 claude 输出日志目录（按租户隔离）。
 func (c *Config) LogsDir() string {
-	return c.get("LOGS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "logs"))
+	return c.tenantSub(c.get("LOGS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "logs")))
 }
 
 // MaxConcurrent 是同时跑 claude 的最大任务数（默认 3）。

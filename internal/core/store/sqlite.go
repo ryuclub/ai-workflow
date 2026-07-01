@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS user_secrets (
   value_enc BLOB NOT NULL,
   PRIMARY KEY (user_id, key)
 );
+CREATE TABLE IF NOT EXISTS tenant_configs (
+  tenant_id TEXT PRIMARY KEY,
+  json TEXT NOT NULL
+);
 `)
 	if err != nil {
 		return err
