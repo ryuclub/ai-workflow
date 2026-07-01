@@ -1,0 +1,15 @@
+{
+  "_说明": "复制为 config.json（机器相关，已 gitignore）。source=活跃票源(jira/linear)；default=标题无路由信号时的默认仓；repos[name] 按 GitHub 地址登记目标仓——控制面自管克隆，无需填本地路径。base 可选(PR base 覆盖，如 stage)。",
+  "source": "jira",
+  "default": "channel",
+  "repos": {
+    "channel": {
+      "github": "your-org/example-channel-service",
+      "match": ["channel", "频道", "Channel"]
+    },
+    "group": {
+      "github": "your-org/example-group-service",
+      "match": ["group", "群组", "Group"]
+    }
+  }
+}

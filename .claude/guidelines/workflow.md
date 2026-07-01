@@ -16,7 +16,7 @@
 
 ```bash
 git fetch origin stage
-git checkout -b <变更类型>/MOS-XXXX-<描述> --no-track origin/stage
+git checkout -b <变更类型>/PROJ-XXXX-<描述> --no-track origin/stage
 ```
 
 **必须以远端 `origin/stage` 为基准**，禁止从本地 `stage` 创建分支。
@@ -37,7 +37,7 @@ git checkout -b <变更类型>/MOS-XXXX-<描述> --no-track origin/stage
 
 ```bash
 git add <具体文件>
-git commit -m "<变更类型>(MOS-XXXX): <简述>
+git commit -m "<变更类型>(PROJ-XXXX): <简述>
 
 - 变更点1
 - 变更点2"
@@ -65,7 +65,7 @@ curl -s -X POST \
   -H "Authorization: token $GITHUB_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/vnd.github.v3+json" \
-  "https://api.github.com/repos/MosaviJP/Moss-gateway/pulls/<PR号>/comments" \
+  "https://api.github.com/repos/your-org/example-gateway/pulls/<PR号>/comments" \
   -d '{"body":"<回复内容>","in_reply_to":<comment_id>}'
 ```
 

@@ -1,71 +1,80 @@
 ---
 name: jira-to-issue
-description: "读取工单（JIRA 或 Linear），调查代码与设计现状并分析，落地为一份正式的 GitHub Issue（带「待审核」标签），作为人类审核闸口与下游实装的唯一依据。不是搬运，而是调查+分析。触发时机: 把MOS-xxxx/SUM-xxxx整理成issue / 由JIRA或Linear创建issue / jira转issue / linear转issue / 起一个待审核issue"
+description: "读取 JIRA 工单，调查代码与设计现状并分析，落地为一份正式的 GitHub Issue（带「待审核」标签），作为人类审核闸口与下游实装的唯一依据。不是搬运，而是调查+分析。触发时机: 把PROJ-xxxx整理成issue / 由JIRA创建issue / jira转issue / 起一个待审核issue"
 user-invokable: true
 ---
 
-# 工单（JIRA / Linear）→ GitHub Issue（调查·分析·落地）
+# JIRA → GitHub Issue（调查·分析·落地）
 
 ## 概述
 
-把一张工单（JIRA 或 Linear，业务 why）落成一份**代码级、可被 GitHub 原生闭环消费的正式 Issue**（what + 方向 + 验收）。
-> 工单源由工单号前缀自动判定：`MOS-` 等走 JIRA；其余形如 `TEAM-数字`（如 `SUM-123`）走 Linear。下文以 JIRA 为主线，Linear 差异在各步显式标注。
+把一张 JIRA 工单（业务 why）落成一份**代码级、可被 GitHub 原生闭环消费的正式 Issue**（what + 方向 + 验收）。
 这不是文本搬运，而是「调查现状 → 分析 → 结构化落地」。产出的 Issue 是：
 
 1. **人类唯一的需求审核闸口**（打 `待审核`，人审改后由人打 `已审核`）；
-2. **下游实装的唯一依据**（实装阶段由它派生 `design/changes/MOS-XXXX.md` 蓝图）。
+2. **下游实装的唯一依据**（实装阶段由它派生 `design/changes/PROJ-XXXX.md` 蓝图）。
 
-整体工作流见 [`.claude/ai-workflow/docs/ai-workflow.md`](../../ai-workflow/docs/ai-workflow.md)。本 skill 只负责链路第 2 步。
+整体工作流见仓根 [`docs/ai-workflow-rebuild-plan.md`](../../../docs/ai-workflow-rebuild-plan.md)。本 skill 只负责链路第 2 步（节点 1–3）。
 
 ## 输入
 
-- 工单号：JIRA `MOS-XXXX` 或 Linear `TEAM-XXXX`（如 `SUM-123`）。无则向用户索取。
+- JIRA 工单号（`PROJ-XXXX`）。无则向用户索取。
 
 ## 真相源优先级（调查时遵循，冲突时由高到低）
 
-参见根目录 `CLAUDE.md` 第 3 节：JIRA 工单 > Mosavi-Group-Service > Mosavi-docs 技术文档 > 产品文档 > 本仓 `design/` > 现状代码（不预设正确）。
+参见根目录 `CLAUDE.md` 第 3 节：JIRA 工单 > example-group-service > example-docs 技术文档 > 产品文档 > 本仓 `design/` > 现状代码（不预设正确）。
 
-## 进度通知（临时，后续移除）
+**读取方式（务必取最新且取对版本，防旧版本 / 漏未合并变更）**：真相源多为 GitHub 仓（example-group-service、example-docs）。**不得依赖本地陈旧克隆或模型记忆**。工单描述/评论里的真相源链接按类型分别取：
+- **PR 链接**（如评论给出 `github.com/your-org/example-docs/pull/N`）：文档可能尚未合并进默认分支，**必须按 PR 实际状态取版本**：
+  ```bash
+  gh pr view N -R your-org/example-docs --json state,headRefName,files
+  ```
+  - 未合并（OPEN）：读该 PR **head 分支**的文档（`gh api repos/your-org/example-docs/contents/<路径>?ref=<headRefName> --jq .content | base64 -d`）或 `gh pr diff N` 看改动；**不要读默认分支**（那里还没有）。
+  - 已合并（MERGED）：文档已进默认分支，读默认分支最新即可。
+  - **多个 PR 参考**（常跨多条评论、已合并 + 未合并混合）：**逐一全部读取**，并按评论时间理解演进——**较晚的未合并 PR 往往是最新方向，可能覆盖较早已合并的版本**，切勿只取其一。（本例 PROJ-3377：回复1→#100 已合并；更晚的回复2→#101 未合并且是对前者的修订，须以 #101 head 分支为准。）
+- **带 ref 的 blob/tree 链接**（`/blob/<ref>/...`）：按该 `ref` 读，不擅自换成默认分支。
+- **纯仓/目录链接**：读默认分支最新 —— 列文件 `gh api repos/your-org/<repo>/git/trees/<默认分支>?recursive=1 --jq '.tree[].path'`；读文件 `gh api repos/your-org/<repo>/contents/<路径>?ref=<默认分支> --jq .content | base64 -d`。
+- 若确要用本地克隆：先 `git -C <克隆> fetch origin` 再读 `origin/<默认分支>`，**绝不读可能落后的本地分支/工作树**。
 
-为便于观察自动流程，每个步骤起止用 Slack 播报：
+## 进度上报（结构化事件 → 控制面）
+
+每个阶段边界调用 `emit-event.sh` 把进度回传控制面后端（后端据此点亮流水线节点、经 SSE 推 Dashboard、经 sink 转 Slack）。**非编排环境（人手直接跑）下该脚本静默跳过，不影响使用。**
+
 ```bash
-bash .claude/ai-workflow/notify.sh "<消息>"
+bash .claude/ai-workflow/emit-event.sh <phase> <status> "<消息>"
 ```
-播报点（B 全程）：
-- 开始：`🔵 [B] MOS-XXXX 开始：读取 JIRA`
-- 调查完成：`🔍 [B] MOS-XXXX 调查完成，开始分析`
-- Issue 建好：`✅ [B] MOS-XXXX → Issue #N（待审核）<url>`
-- 失败：`⚠️ [B] MOS-XXXX 失败：<原因>`
+
+约定：**每个节点成对上报 `start` → `ok`**（phase 须用下列值）：
+- 读 JIRA：`emit-event.sh B.read start "读取 JIRA"` → `emit-event.sh B.read ok "JIRA 读取完成"`
+- 调查现状：`emit-event.sh B.investigate start "并行调查"` → `emit-event.sh B.investigate ok "调查完成"`
+- 分析建 Issue：`emit-event.sh B.issue start "分析并落地 Issue"` → **完成时带 Issue 编号/URL**：
+  ```bash
+  WF_ISSUE_NUM=<N> WF_ISSUE_URL=<url> bash .claude/ai-workflow/emit-event.sh B.issue ok "Issue #<N> 已建（待审核）"
+  ```
+  （`WF_ISSUE_NUM` 让控制面记下编号，供人审通过后实装阶段 C 使用——**务必上报**。）
+- **正常判定无需处理**（如票为「无需处理」状态、纯文档无代码改动、调查后确认无需落 Issue）：
+  `emit-event.sh B.issue skip "无需处理：<原因>"` —— 这是**正常终止**（任务转「已跳过」），**不要**当失败上报。
+- 任一步**异常**遇阻（认证失败 / gh 出错 / 无法判定）：`emit-event.sh B.<当前phase> fail "<原因>"` —— 任务转「待裁决」。
+- 区分原则：**能不能做完 vs 该不该做**。该不该做的否定结论 = `skip`；做的过程中坏了 = `fail`。
 
 ## 工作流程
 
-### Step 0：确定工单号与工单源
+### Step 0：确定工单号
 
-从 `$ARGUMENTS` 提取工单号；缺失则向用户索取。按前缀判定工单源：
+从 `$ARGUMENTS` 提取 `PROJ-XXXX`；缺失则向用户索取。
 
-- `MOS-XXXX`（及其它 JIRA 项目 key）→ **JIRA**，用 `jira_api.py`。
-- 其余形如 `TEAM-数字`（如 `SUM-123`）→ **Linear**，用 `linear_api.py`。
+### Step 1：读取 JIRA 工单
 
-### Step 1：读取工单
-
-**JIRA：**
 ```bash
-python3 .claude/ai-workflow/jira_api.py get <MOS-XXXX>
+python3 .claude/ai-workflow/jira_api.py get <PROJ-XXXX>
 ```
+
 - `description` 是 **ADF（Atlassian Document Format）JSON**，不是纯文本。需自行解析：
   - 正文 = 递归提取各节点的 `text`；
   - **链接** = ADF 节点 `marks` 中 `type: "link"` 的 `attrs.href`（设计书 / Confluence / 图等）。
-
-**Linear：**
-```bash
-python3 .claude/ai-workflow/linear_api.py get <TEAM-XXXX>
-```
-- `description` 是 **Markdown 纯文本**，直接可用；链接为标准 Markdown `[text](url)`，无需 ADF 解析。
-- 返回另带 `url`（工单页地址），用于 Issue「来源」。
-
-**两者通用：**
 - 把工单内所有链接文档**全部读取**（设计书、Confluence、外部 API 契约等），作为调查输入。
-- 记录：`summary`、`status`、`issuetype`、`labels`、`parent`、`subtasks`。两个客户端 `get` 输出字段同构。
+- **评论/回复必读**：`get` 返回的 `comments`（作者 / 时间 / `body`）里常有澄清、追加需求、方案决策与**上游文档 PR 链接**；`body` 同为 ADF，需递归解析文本 + 链接。**链接既可能是 ADF `link` mark，也可能是纯文本 URL（未加超链接）——两者都要抓**（例：评论里 `github.com/your-org/example-docs/pull/101` 可能是裸 URL），漏了会丢真相源。评论较多时可另取全量：`GET /rest/api/2/issue/<KEY>/comment`。
+- 记录：`summary`、`status`、`issuetype`、`labels`、`parent`、`subtasks`、`comments`。
 
 ### Step 2：并行调查现状（Agent Explore，多路并发）
 
@@ -89,19 +98,19 @@ python3 .claude/ai-workflow/linear_api.py get <TEAM-XXXX>
 - **风险与未决问题**；
 - **验收标准 / 测试观点**。
 
-粒度把握：Issue 写「概要 / 方向」，够人类判断「该做吗 / 方向对吗」即可；逐文件详设留到实装阶段的 `design/changes/MOS-XXXX.md`。
+粒度把握：Issue 写「概要 / 方向」，够人类判断「该做吗 / 方向对吗」即可；逐文件详设留到实装阶段的 `design/changes/PROJ-XXXX.md`。
 
 ### Step 4：落地 GitHub Issue（upsert：新建 或 重建+重置）
 
 JIRA 票可能被多次触发（票内容更新后重发）。**先查重，再决定新建还是重建**：
 ```bash
-gh issue list --search "[MOS-XXXX] in:title" --state all --json number,state,title
+gh issue list --search "[PROJ-XXXX] in:title" --state all --json number,state,title
 ```
 
 **情况 A — 不存在同名 Issue**：新建，打 `待审核`：
 ```bash
 gh issue create \
-  --title "[MOS-XXXX] <简明需求标题>" \
+  --title "[PROJ-XXXX] <简明需求标题>" \
   --label "待审核" \
   --body-file <临时正文文件>
 ```
@@ -118,18 +127,17 @@ gh issue edit <N> --add-label "待审核" \
 - 标签始终归位到 `待审核`；类型标签（`enhancement`/`bug`）可保留或一并加。
 - 完成后向用户报告 Issue URL（注明是新建还是重建）。
 
-### Step 5：回写工单关联（可选）
+### Step 5：回写 JIRA 关联（可选）
 
-- **JIRA**：`jira_api.py` 目前**无评论 API**（仅字段更新 / 状态转换）。默认**跳过**，仅在报告里给出 Issue URL 供人工回填。
-- **Linear**：`linear_api.py comment <TEAM-XXXX> "<正文>"` 可写评论。如需 Linear↔Issue 双向关联，可回写 Issue URL；当前默认仍**跳过**（保持与 JIRA 一致的最小副作用），仅在报告里给出 URL。
+`jira_api.py` 可**读**评论（`get` 已返回 `comments`），但暂**无写评论 API**（仅字段更新 / 状态转换）。如需 JIRA↔Issue 双向关联回写，需先补 `add_comment`；当前默认**跳过**，仅在报告里给出 Issue URL 供人工回填。
 
 ## Issue 正文模板
 
 ```markdown
-# [MOS-XXXX] <简明需求标题>
+# [PROJ-XXXX] <简明需求标题>
 
 ## 来源
-- 工单: <JIRA: https://<domain>/browse/MOS-XXXX ｜ Linear: get 返回的 url>
+- JIRA: https://your-domain.atlassian.net/browse/PROJ-XXXX
 - 类型 / 状态: <issuetype> / <status>
 - 原始摘要: <summary 一句话>
 
@@ -150,10 +158,10 @@ gh issue edit <N> --add-label "待审核" \
 ## 方案概要
 实现方向（不含逐行代码）。
 
-## 方案分歧点（需人类拍板）
-- 方案 A：… ｜ 优 … ｜ 劣 …
-- 方案 B：… ｜ 优 … ｜ 劣 …
-（无分歧则写「无，方向单一」）
+## 方案分歧点（需人类拍板——审核时勾选选定项）
+- [ ] 方案 A：… ｜ 优 … ｜ 劣 …
+- [ ] 方案 B：… ｜ 优 … ｜ 劣 …
+（多方案**必须**用 `- [ ]` 复选框列出，供人审直接勾选；无分歧则写「无，方向单一」）
 
 ## 风险与未决问题
 - …

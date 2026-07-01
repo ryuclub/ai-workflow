@@ -61,6 +61,8 @@ class JiraAPI:
         self.username = env.get("ATLASSIAN_USERNAME") or os.environ.get("ATLASSIAN_USERNAME")
         self.api_key = env.get("ATLASSIAN_API_KEY") or os.environ.get("ATLASSIAN_API_KEY")
         self.domain = env.get("ATLASSIAN_DOMAIN") or os.environ.get("ATLASSIAN_DOMAIN")
+        # 项目键从环境读取（无公司默认值；未配则退回类属性占位）
+        self.PROJECT_KEY = env.get("JIRA_PROJECT") or os.environ.get("JIRA_PROJECT") or self.PROJECT_KEY
 
         if not all([self.username, self.api_key, self.domain]):
             print("Error: 认证信息未设置。")
@@ -170,20 +172,22 @@ class JiraAPI:
             for issue in result.get("issues", [])
         ]
 
-    # MOS 项目工单类型 ID（来自 /rest/api/3/issue/createmeta/MOS/issuetypes）
-    PROJECT_KEY = "MOS"
+    # 工单类型 ID / 自定义字段均为「JIRA 实例特有」示例值，运行时 __init__ 会用
+    # 环境变量 JIRA_PROJECT 覆盖 PROJECT_KEY；创建工单前请按你的实例
+    # /rest/api/3/issue/createmeta/<PROJECT>/issuetypes 校对下列 ID。
+    PROJECT_KEY = ""  # 占位：由环境变量 JIRA_PROJECT 提供
     ISSUE_TYPE_IDS = {
-        "长篇故事": "10000",     # Epic
+        "长篇故事": "10000",     # Epic（示例 ID，按实例调整）
         "故事": "10006",         # Story
         "任务": "10007",         # Task
         "子任务": "10008",       # Subtask
         "缺陷": "10009",        # Bug
     }
 
-    # 默认字段值（所有新建工单自动设置）
-    DEFAULT_TEAM_ID = "7a43ee36-7f36-4445-b044-b5c17aff0239"  # Team: Server
+    # 默认字段值（示例，按你的 JIRA 实例调整；所有新建工单自动设置）
+    DEFAULT_TEAM_ID = ""  # 团队字段值（实例特有 UUID）
     TEAM_FIELD = "customfield_10001"
-    DEFAULT_SYSTEM = {"id": "10022"}  # 系统: Server
+    DEFAULT_SYSTEM = {"id": "10022"}  # 系统字段值（示例）
     SYSTEM_FIELD = "customfield_10037"
 
     def _resolve_duedate(self, duedate: Optional[str]) -> Optional[str]:
@@ -233,10 +237,13 @@ class JiraAPI:
                 "issuetype": {"id": self.ISSUE_TYPE_IDS[issue_type]},
                 "description": adf_description,
                 "timetracking": self._build_time_tracking(estimate_hours, 8),
-                self.TEAM_FIELD: self.DEFAULT_TEAM_ID,
-                self.SYSTEM_FIELD: self.DEFAULT_SYSTEM,
             }
         }
+        # 实例特有字段：仅在配置了值时附加（未配则由 JIRA 用项目默认）
+        if self.DEFAULT_TEAM_ID:
+            data["fields"][self.TEAM_FIELD] = self.DEFAULT_TEAM_ID
+        if self.DEFAULT_SYSTEM:
+            data["fields"][self.SYSTEM_FIELD] = self.DEFAULT_SYSTEM
 
         if self.current_account_id:
             data["fields"]["assignee"] = {"accountId": self.current_account_id}
@@ -310,10 +317,13 @@ class JiraAPI:
                 "issuetype": {"id": child_type_id},
                 "description": adf_description,
                 "timetracking": self._build_time_tracking(estimate_hours, default_estimate_hours),
-                self.TEAM_FIELD: self.DEFAULT_TEAM_ID,
-                self.SYSTEM_FIELD: self.DEFAULT_SYSTEM,
             }
         }
+        # 实例特有字段：仅在配置了值时附加
+        if self.DEFAULT_TEAM_ID:
+            data["fields"][self.TEAM_FIELD] = self.DEFAULT_TEAM_ID
+        if self.DEFAULT_SYSTEM:
+            data["fields"][self.SYSTEM_FIELD] = self.DEFAULT_SYSTEM
 
         if self.current_account_id:
             data["fields"]["assignee"] = {"accountId": self.current_account_id}
@@ -534,7 +544,7 @@ def main():
     elif command == "bulk-create":
         if len(sys.argv) < 4:
             print("用法: jira_api.py bulk-create <父工单key> '<json数组>'")
-            print('示例: jira_api.py bulk-create MOS-1234 \'[{"summary": "任务1"}, {"summary": "任务2"}]\'')
+            print('示例: jira_api.py bulk-create PROJ-1234 \'[{"summary": "任务1"}, {"summary": "任务2"}]\'')
             sys.exit(1)
         subtasks = json.loads(sys.argv[3])
         results = api.bulk_create_subtasks(sys.argv[2], subtasks)
@@ -543,7 +553,7 @@ def main():
     elif command == "update":
         if len(sys.argv) < 4:
             print("用法: jira_api.py update <工单key> '<json字段>'")
-            print('示例: jira_api.py update MOS-1234 \'{"summary": "新标题"}\'')
+            print('示例: jira_api.py update PROJ-1234 \'{"summary": "新标题"}\'')
             sys.exit(1)
         fields = json.loads(sys.argv[3])
         result = api.update(sys.argv[2], fields)
@@ -566,7 +576,7 @@ def main():
     elif command == "search":
         if len(sys.argv) < 3:
             print("用法: jira_api.py search '<JQL 查询>'")
-            print('示例: jira_api.py search \'project = MOS AND parent = MOS-1234\'')
+            print('示例: jira_api.py search \'project = PROJ AND parent = PROJ-1234\'')
             sys.exit(1)
         max_results = int(sys.argv[3]) if len(sys.argv) > 3 else 50
         results = api.search(sys.argv[2], max_results)

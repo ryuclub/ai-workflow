@@ -1,6 +1,6 @@
 ---
 name: pr-creator
-description: "根据 Git diff 和 JIRA 工单信息自动生成 PR 描述文，并一键创建 PR（Draft）。按照项目 PR 模板的格式，整理变更内容、背景说明和测试结果。根据分支名自动判定并附加 PR 标签。触发时机: 创建PR / 写PR描述 / 生成Pull Request说明 / 给这个分支创建PR / 创建MOS-xxx的PR"
+description: "根据 Git diff 和 JIRA 工单信息自动生成 PR 描述文，并一键创建 PR（Draft）。按照项目 PR 模板的格式，整理变更内容、背景说明和测试结果。根据分支名自动判定并附加 PR 标签。触发时机: 创建PR / 写PR描述 / 生成Pull Request说明 / 给这个分支创建PR / 创建PROJ-xxx的PR"
 user-invokable: true
 ---
 
@@ -16,7 +16,7 @@ user-invokable: true
 ### Step 1: 信息收集
 
 1. **确认 JIRA 工单号**
-   - 从用户获取工单号（例: MOS-1234）
+   - 从用户获取工单号（例: PROJ-1234）
    - 如有多个工单则全部确认
 
 2. **确认目标分支**
@@ -58,7 +58,7 @@ user-invokable: true
 
 ```markdown
 ## 关联工单
-- [MOS-XXXX](https://mosavi.atlassian.net/browse/MOS-XXXX)
+- [PROJ-XXXX](https://your-domain.atlassian.net/browse/PROJ-XXXX)
 
 ## 变更概要
 <!-- 简要说明本次变更的目的和范围 -->

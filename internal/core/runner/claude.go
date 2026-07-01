@@ -1,0 +1,236 @@
+package runner
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/ryuclub/ai-workflow/internal/core/config"
+	"github.com/ryuclub/ai-workflow/internal/core/store"
+)
+
+// Env 向 runner 提供运行期配置与目标仓本地路径（支持设置热重载与自管克隆）。
+type Env interface {
+	Config() *config.Config
+	RepoPath(ctx context.Context, github string) (string, error)
+}
+
+// Claude 在目标仓的临时 worktree 内跑 claude -p（真实实现）。
+type Claude struct {
+	env Env
+}
+
+// NewClaude 构造真实 runner。
+func NewClaude(env Env) *Claude { return &Claude{env: env} }
+
+// RunB 跑「票 → GitHub Issue」。命令按活跃源选择对应 skill。
+func (c *Claude) RunB(ctx context.Context, t *store.Task) error {
+	var prompt string
+	switch t.Source {
+	case "jira":
+		prompt = "/jira-to-issue " + t.SourceID
+	case "linear":
+		prompt = "/linear-to-issue " + t.SourceID
+	default:
+		return fmt.Errorf("未知源 %q，无对应 B skill", t.Source)
+	}
+	return c.run(ctx, t, prompt, "B")
+}
+
+// RunC 跑「已审核 Issue → PR」。需 B 阶段回传的 Issue 编号。
+func (c *Claude) RunC(ctx context.Context, t *store.Task) error {
+	if t.IssueNum == 0 {
+		return fmt.Errorf("缺少 Issue 编号，无法实装")
+	}
+	return c.run(ctx, t, fmt.Sprintf("/issue-to-pr %d", t.IssueNum), "C")
+}
+
+// RunD 跑「按 PR review 意见修订」。需 C 阶段产出的 PR 编号；skill 自行 checkout PR 分支并 push。
+func (c *Claude) RunD(ctx context.Context, t *store.Task) error {
+	if t.PRNum == 0 {
+		return fmt.Errorf("缺少 PR 编号，无法修订")
+	}
+	return c.run(ctx, t, fmt.Sprintf("/pr-revise %d", t.PRNum), "D")
+}
+
+func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) error {
+	cfg := c.env.Config()
+	repo, ok := cfg.Repos[t.Repo]
+	if !ok {
+		return fmt.Errorf("未登记的仓：%q", t.Repo)
+	}
+	repoPath, err := c.env.RepoPath(ctx, repo.GitHub)
+	if err != nil {
+		return fmt.Errorf("解析仓本地路径失败（%s）：%w", repo.GitHub, err)
+	}
+	if !isDir(repoPath) {
+		return fmt.Errorf("仓本地路径无效：%q", repoPath)
+	}
+	base := detectBase(repoPath)
+	wt := filepath.Join(cfg.WorktreeBase(), fmt.Sprintf("%s-%s-%d", t.Repo, label, time.Now().UnixNano()))
+	if err := os.MkdirAll(cfg.WorktreeBase(), 0o755); err != nil {
+		return err
+	}
+	if out, err := gitC(repoPath, "worktree", "add", "--detach", wt, base); err != nil {
+		return fmt.Errorf("worktree add 失败（base=%s）：%v：%s", base, err, out)
+	}
+	defer gitC(repoPath, "worktree", "remove", "--force", wt)
+
+	// 注入控制面的 .env（凭据）+ B/C skill 包到 worktree。
+	// skill 包临时注入而非要求目标仓常驻：跑完随 worktree 清理，任何登记仓开箱即用。
+	injectEnv(cfg.Root, wt)
+	injectSkills(cfg.Root, wt)
+
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TaskTimeoutMin())*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, cfg.ClaudeBin(), "-p", prompt, "--dangerously-skip-permissions")
+	cmd.Dir = wt
+	// 注入任务上下文：skill 经 emit-event.sh 用这些把阶段事件 POST 回控制面。
+	env := append(os.Environ(),
+		"WF_TASK_ID="+t.ID,
+		"WF_EVENT_URL="+cfg.EventURLBase()+"/internal/tasks/"+t.ID+"/event",
+		"WF_INTERNAL_TOKEN="+cfg.InternalToken(),
+	)
+	if repo.Base != "" {
+		env = append(env, "WF_PR_BASE="+repo.Base) // 每仓 PR base 覆盖（issue-to-pr 优先取）
+	}
+	cmd.Env = env
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err = cmd.Run()
+	out := buf.String()
+	writeLog(cfg.LogsDir(), t.ID, label, prompt, out) // 全量输出落盘，便于排查
+
+	// claude 未登录时会打印「Not logged in」却仍以退出码 0 退出 —— 必须显式识别，
+	// 否则后台环境（够不到 keychain 登录态）会静默「假成功」。（沿用旧 server.py 踩坑）
+	if authFailed(out) {
+		return fmt.Errorf("claude 未登录/认证失效（须在能访问 keychain 的登录会话内跑，或配 CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY）：%s", tail(out, 300))
+	}
+	if err != nil {
+		return fmt.Errorf("claude 退出异常：%v：%s", err, tail(out, 300))
+	}
+	return nil
+}
+
+// detectBase 返回建 worktree 的起点 ref。
+// 关键：用 origin/HEAD 指向的**远程跟踪引用**（如 origin/main），而非本地分支——
+// EnsureLocal 只 fetch（更新 origin/*），从不移动本地分支；用本地分支会拿到首次 clone 时的陈旧代码。
+// 远程引用在 fetch 后即最新，worktree add --detach origin/<base> 直接基于最新提交。
+func detectBase(repoPath string) string {
+	if out, err := gitC(repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if ref := strings.TrimSpace(out); ref != "" {
+			return ref // 形如 origin/main
+		}
+	}
+	// 兜底：无 origin/HEAD（罕见）时退回本地当前分支（可能非最新）。
+	if out, err := gitC(repoPath, "symbolic-ref", "--short", "HEAD"); err == nil {
+		if b := strings.TrimSpace(out); b != "" {
+			return b
+		}
+	}
+	return "main"
+}
+
+func gitC(repoPath string, args ...string) (string, error) {
+	full := append([]string{"-C", repoPath}, args...)
+	out, err := exec.Command("git", full...).CombinedOutput()
+	return string(out), err
+}
+
+func injectEnv(root, wt string) {
+	src := filepath.Join(root, ".claude", "ai-workflow", ".env")
+	dst := filepath.Join(wt, ".claude", "ai-workflow", ".env")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return
+	}
+	copyFile(src, dst)
+}
+
+// injectSkills 把控制面的 B/C skill 包临时拷进 worktree，使目标仓无需常驻安装。
+// 目标仓自身的 CLAUDE.md/guidelines 仍由其 checkout 提供（skill 运行时读）。
+func injectSkills(root, wt string) {
+	cw := filepath.Join(wt, ".claude")
+	// B/D skill 包（票→Issue、按意见修订 PR）；按活跃源选 B skill，但全部注入无副作用。
+	for _, name := range []string{"jira-to-issue", "linear-to-issue", "pr-revise"} {
+		copyDir(filepath.Join(root, ".claude", "skills", name),
+			filepath.Join(cw, "skills", name))
+	}
+	_ = os.MkdirAll(filepath.Join(cw, "commands"), 0o755)
+	copyFile(filepath.Join(root, ".claude", "commands", "issue-to-pr.md"),
+		filepath.Join(cw, "commands", "issue-to-pr.md"))
+	awf := filepath.Join(cw, "ai-workflow")
+	_ = os.MkdirAll(awf, 0o755)
+	for _, f := range []string{"jira_api.py", "emit-event.sh", "notify.sh"} {
+		copyFile(filepath.Join(root, ".claude", "ai-workflow", f), filepath.Join(awf, f))
+	}
+	_ = os.Chmod(filepath.Join(awf, "emit-event.sh"), 0o755)
+	_ = os.Chmod(filepath.Join(awf, "notify.sh"), 0o755)
+}
+
+// copyDir 递归拷贝目录（用于 skill 包注入）。
+func copyDir(src, dst string) {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(dst, 0o755)
+	for _, e := range entries {
+		s, d := filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			copyDir(s, d)
+		} else {
+			copyFile(s, d)
+		}
+	}
+}
+
+func copyFile(src, dst string) {
+	in, err := os.Open(src)
+	if err != nil {
+		return
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return
+	}
+	defer out.Close()
+	_, _ = io.Copy(out, in)
+}
+
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+// writeLog 把单次 claude 运行的命令与全量输出落到 <LogsDir>/<taskID>.<label>.log。
+func writeLog(dir, taskID, label, prompt, out string) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	content := fmt.Sprintf("# claude -p %q\n# label=%s\n\n%s", prompt, label, out)
+	_ = os.WriteFile(filepath.Join(dir, taskID+"."+label+".log"), []byte(content), 0o644)
+}
+
+func authFailed(out string) bool {
+	for _, s := range []string{"Not logged in", "Please run /login", "Invalid API key"} {
+		if strings.Contains(out, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}

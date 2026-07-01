@@ -2,9 +2,9 @@
 
 ## 项目信息
 
-- **项目 Key**: `MOS`
-- **工单 URL**: `https://mosavi.atlassian.net/browse/MOS-XXXX`
-- **看板**: https://mosavi.atlassian.net/jira/software/c/projects/MOS/boards/170
+- **项目 Key**: `PROJ`
+- **工单 URL**: `https://your-domain.atlassian.net/browse/PROJ-XXXX`
+- **看板**: https://your-domain.atlassian.net/jira/software/c/projects/PROJ/boards/170
 
 ## 工单类型
 
@@ -41,18 +41,18 @@ python3 .claude/skills/jira-manage-ticket/scripts/jira_api.py \
 
 # 创建子工单
 python3 .claude/skills/jira-manage-ticket/scripts/jira_api.py \
-  create MOS-1234 "<子任务标题>" "<描述>" [预估工时h]
+  create PROJ-1234 "<子任务标题>" "<描述>" [预估工时h]
 
 # 获取工单信息
-python3 .claude/skills/jira-manage-ticket/scripts/jira_api.py get MOS-1234
+python3 .claude/skills/jira-manage-ticket/scripts/jira_api.py get PROJ-1234
 
 # 搜索工单（JQL）
 python3 .claude/skills/jira-manage-ticket/scripts/jira_api.py \
-  search "project = MOS AND assignee = currentUser() AND status != Done"
+  search "project = PROJ AND assignee = currentUser() AND status != Done"
 
 # 状态变更
 python3 .claude/skills/jira-manage-ticket/scripts/jira_api.py \
-  transition MOS-1234 "进行中"
+  transition PROJ-1234 "进行中"
 ```
 
 > 凭据配置：`.claude/skills/jira-manage-ticket/.env`（参照 `.env.example`）
@@ -76,7 +76,7 @@ JIRA 评论使用 **JIRA Wiki 标记**，禁止使用 Markdown。
 一个工单对应一个分支，分支命名规则参照 [branch.md](branch.md)。
 
 ```
-故事 MOS-1234
-  └── feat/MOS-1234-add-user-auth
+故事 PROJ-1234
+  └── feat/PROJ-1234-add-user-auth
         └── PR → stage
 ```

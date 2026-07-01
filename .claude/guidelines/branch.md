@@ -37,7 +37,7 @@ git push -u origin <分支名>
 ## 示例
 
 ```
-feat/MOS-1234-add-user-auth
-fix/MOS-2345-fix-login-bug
-perf/MOS-2569-optimize-log-output
+feat/PROJ-1234-add-user-auth
+fix/PROJ-2345-fix-login-bug
+perf/PROJ-2569-optimize-log-output
 ```

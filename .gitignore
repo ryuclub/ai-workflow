@@ -1,13 +1,43 @@
-# 密钥与运行时产物（绝不入库）
-.env
-**/.env
-**/__pycache__/
-.claude/ai-workflow/config.json
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.log
 
-# Claude Code 运行时
-.claude/.remote-cache/
-.claude/.remote-load.json
-scheduled_tasks.lock
-
-# OS
 .DS_Store
+
+# Test binary
+*.test
+
+# Coverage
+*.out
+
+# Go workspace file
+go.work
+.idea/
+.env
+/log
+*.toml
+.vscode/
+*.swo
+*.swp
+nohup.out
+
+# /dev-test-gen 沙箱（多轮生成、对比漂移用）
+/test-sandbox/
+# /dev-test-gen CASE 级 audit 报告（本地保留，不入 git，详 dev-test-gen.md 硬约束 #14）
+*_report.md
+# Claude Code 本地个人配置（不入库）
+.claude/settings.local.json
+
+# AI 工作流控制面本地态
+/config.json
+/.claude/ai-workflow/tasks.db
+/frontend/dist/
+/frontend/node_modules/
+/.claude/ai-workflow/repos/
+*.tsbuildinfo
+# 后端构建产物（本地跑用，不入库）
+/wf-server

@@ -23,9 +23,9 @@ user-invokable: true
 1. **PR 基本信息**：`gh pr view <number> --json title,body,headRefName,baseRefName,additions,deletions,changedFiles`
 2. **现有 review comments**：`gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate`，解析每条 comment 的作者、内容、回复关系
 3. **PR diff**：`gh pr diff <number>`
-4. **JIRA 工单信息**（如 PR 关联了 JIRA 工单）：从 PR title/body/分支名中提取工单号（如 MOS-xxxx），通过 JIRA API 获取工单详情：
+4. **JIRA 工单信息**（如 PR 关联了 JIRA 工单）：从 PR title/body/分支名中提取工单号（如 PROJ-xxxx），通过 JIRA API 获取工单详情：
    ```bash
-   curl --netrc https://mosavi.atlassian.net/rest/api/2/issue/MOS-xxxx
+   curl --netrc https://your-domain.atlassian.net/rest/api/2/issue/PROJ-xxxx
    ```
    重点关注：工单描述、验收条件、子任务列表。用于后续审查时判断代码变更是否完整覆盖了工单需求、是否存在遗漏或超出范围的修改。
 

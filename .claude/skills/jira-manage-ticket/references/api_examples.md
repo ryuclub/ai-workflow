@@ -20,14 +20,14 @@ Authorization: Basic base64($USER:$TOKEN)
 
 ```bash
 curl -s -u "$USER:$TOKEN" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234" | jq
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234" | jq
 ```
 
 ### 仅获取特定字段
 
 ```bash
 curl -s -u "$USER:$TOKEN" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234?fields=summary,status,subtasks" | jq
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234?fields=summary,status,subtasks" | jq
 ```
 
 ## Create (POST)
@@ -41,8 +41,8 @@ curl -s -u "$USER:$TOKEN" \
   "https://$DOMAIN/rest/api/3/issue" \
   -d '{
     "fields": {
-      "project": {"key": "MOS"},
-      "parent": {"key": "MOS-1234"},
+      "project": {"key": "PROJ"},
+      "parent": {"key": "PROJ-1234"},
       "summary": "子任务标题",
       "issuetype": {"name": "子任务"},
       "description": {
@@ -76,7 +76,7 @@ curl -s -u "$USER:$TOKEN" \
 curl -s -u "$USER:$TOKEN" \
   -X PUT \
   -H "Content-Type: application/json" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234" \
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234" \
   -d '{"fields": {"summary": "新标题"}}'
 ```
 
@@ -86,7 +86,7 @@ curl -s -u "$USER:$TOKEN" \
 curl -s -u "$USER:$TOKEN" \
   -X PUT \
   -H "Content-Type: application/json" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234" \
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234" \
   -d '{
     "fields": {
       "description": {
@@ -111,7 +111,7 @@ curl -s -u "$USER:$TOKEN" \
 curl -s -u "$USER:$TOKEN" \
   -X PUT \
   -H "Content-Type: application/json" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234" \
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234" \
   -d '{"fields": {"assignee": {"accountId": "xxx"}}}'
 ```
 
@@ -120,7 +120,7 @@ curl -s -u "$USER:$TOKEN" \
 ```bash
 curl -s -u "$USER:$TOKEN" \
   -X DELETE \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234"
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234"
 ```
 
 **注意:** 如果存在子任务，需先删除子任务
@@ -131,7 +131,7 @@ curl -s -u "$USER:$TOKEN" \
 
 ```bash
 curl -s -u "$USER:$TOKEN" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234/transitions" | jq '.transitions[] | {id, name}'
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234/transitions" | jq '.transitions[] | {id, name}'
 ```
 
 ### 执行状态变更
@@ -140,6 +140,6 @@ curl -s -u "$USER:$TOKEN" \
 curl -s -u "$USER:$TOKEN" \
   -X POST \
   -H "Content-Type: application/json" \
-  "https://$DOMAIN/rest/api/3/issue/MOS-1234/transitions" \
+  "https://$DOMAIN/rest/api/3/issue/PROJ-1234/transitions" \
   -d '{"transition": {"id": "31"}}'
 ```

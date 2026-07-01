@@ -1,12 +1,10 @@
 # 编码规约
 
-> ⚠️ 本规约是 **Mosavi / Go(Gin)** 默认样例。其他技术栈的目标仓请**覆盖或删除本文件**，换成本项目自己的编码规约（`install-into.sh` 不会覆盖目标仓已有的同名文件）。
-
 ## 技术栈
 
 | 维度 | 选型 | 备注 |
 | --- | --- | --- |
-| 语言 | Go 1.25.5 | `module mosavi.space/mosavi-channel-service` |
+| 语言 | Go 1.25.5 | `module example.com/example-channel-service` |
 | Web 框架 | Gin | 中间件：cors / gzip / requestid |
 | 依赖注入 | Uber-go/fx | 按层 Module 装配（架构见 [`ARCHITECTURE.md`](../../ARCHITECTURE.md)） |
 | 数据库 | PostgreSQL 15.10（GORM + pgx 驱动） | 单一 `infra.ChannelClient`，**无读写分离**；连接池 MaxOpen=100 / MaxIdle=50 |
@@ -14,7 +12,7 @@
 | 日志 | zap + OTel（经 go-common otelzap 桥接） | 规范见下「日志规范」 |
 | 参数校验 | go-playground/validator/v10 | 统一经 `internal/util/request` |
 | API 文档 | swaggo（swag / gin-swagger） | 非 release 暴露 Swagger UI |
-| 私有库 | `Mosavi-go-common` | 需 `GOPRIVATE=github.com/MosaviJP/*` + SSH key |
+| 私有库 | `example-go-common` | 需 `GOPRIVATE=github.com/your-org/*` + SSH key |
 
 ## 通用原则
 
@@ -25,7 +23,7 @@
 ## 错误码管理
 
 - 错误码定义在 `internal/model/xerror/error.go`
-- **新增或修改错误码时，必须同步更新 文档**：[Mosavi-docs 频道 ](https://github.com/MosaviJP/Mosavi-docs/blob/main/%E9%A2%91%E9%81%93/%E6%8A%80%E6%9C%AF%E6%96%87%E6%A1%A3/04-%E5%93%8D%E5%BA%94%E7%A0%81%E5%AE%9A%E4%B9%89.md)
+- **新增或修改错误码时，必须同步更新 文档**：[example-docs 频道 ](https://github.com/your-org/example-docs/blob/main/%E9%A2%91%E9%81%93/%E6%8A%80%E6%9C%AF%E6%96%87%E6%A1%A3/04-%E5%93%8D%E5%BA%94%E7%A0%81%E5%AE%9A%E4%B9%89.md)
 
 ## 日志规范
 

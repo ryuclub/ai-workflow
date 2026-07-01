@@ -1,25 +1,34 @@
 # CLAUDE.md
 
-> 本仓是 AI 协作工具集本体（被各产品仓 `install-into` 接入）。本文件只做**导航 + 行为合同**。
+> AI 工作流流水线（控制面 + Dashboard）的协作入口。本文件**只做导航 + 行为合同**，不抄规范正文。
 
-## 是什么 / 怎么用
+## 1. 是什么 / 怎么跑
 
-- 总览与接入：[`README.md`](./README.md)
-- 引擎手册 / 安全模型 / 运维：[`.claude/ai-workflow/README.md`](./.claude/ai-workflow/README.md)
-- 工作流设计：[`.claude/ai-workflow/docs/`](./.claude/ai-workflow/docs/)
+- 产品简介、架构、启动：[`README.md`](./README.md)
+- 完整设计与决策记录：[`docs/ai-workflow-rebuild-plan.md`](./docs/ai-workflow-rebuild-plan.md)
 
-## 怎么写代码
+## 2. 怎么写代码
 
-- 编码 / 分支 / commit / JIRA / 提交前自审 / 测试规格：[`.claude/guidelines/`](./.claude/guidelines/)
+- 分支 / commit：[`.claude/guidelines/branch.md`](./.claude/guidelines/branch.md)
+- 编码规约：[`.claude/guidelines/coding.md`](./.claude/guidelines/coding.md)
+- 工作流：[`.claude/guidelines/workflow.md`](./.claude/guidelines/workflow.md)
+- JIRA：[`.claude/guidelines/jira.md`](./.claude/guidelines/jira.md)
+- 提交前自审：[`.claude/guidelines/pre-commit-review.md`](./.claude/guidelines/pre-commit-review.md)
 
-## AI 行为合同（硬约束）
+### 分层硬约束
+- `internal/core/` 是纯领域层，**禁止 import gin / 任何 web 依赖**；HTTP 只存在于 `internal/api/`。
+- 对外只认 `/api/v1` 契约；`/internal` 不公开、不版本化（仅 skill 事件回传）。
+- 票源经 `core/source.Provider` 抽象，新增源 = 加一个 provider，不改上层。
 
-- ✅ 全程**中文**输出（代码注释 / commit / PR / JIRA 评论）
-- ❌ 不署名（commit 不加 `Co-Authored-By`；PR/Review/JIRA 不提 AI 工具名）
+## 3. AI 行为合同（硬约束）
+
+- ✅ 全程**中文**输出（代码注释 / commit / PR / JIRA·Linear 评论 / Review）
+- ❌ 不署名（commit 不加 `Co-Authored-By`；PR/Review 不提 AI 工具名）
 - ❌ 不擅自 `push` / `merge` / 远程操作——须用户明确同意
-- ❌ 提交任何密钥（`.env` / `config.json` 已 gitignore，改动 `*.example` 而非真值）
+- ❌ 不动 `.idea/`、`config.json`、`.claude/ai-workflow/.env`（机器相关/含密钥）
+- ⚠️ 控制面须跑在能访问 `claude` 登录态的图形登录会话内（headless 假成功坑）
 
-## 维护提醒
+## 4. 关键概念
 
-- 这里是工具集**真相源**。改了 skill/command/引擎后，已接入的产品仓需重新 `install-into` 或同步对应文件。
-- 信号原则：状态只看 GitHub 标签、通知只走 Slack、Issue 标题+主贴=唯一真相、产物是 PR（`Closes #N`）。
+- **控制面 / 执行面分离**：本仓是控制面（不被自动化）；目标仓才是被改代码的执行面。
+- **信号模型**：GitHub label = 状态机（待审核/已审核/已实装/待裁决）；事件经 `/internal` 回传点亮流水线、经 SSE 推 Dashboard、经 sink 转 Slack。
