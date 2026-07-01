@@ -66,6 +66,22 @@ func TestResolveTwoTier(t *testing.T) {
 	}
 }
 
+// TestAADRejectsCrossSlot：把租户 A 的密文搬到租户 B 的槽，解密应失败（AAD 绑定）。
+func TestAADRejectsCrossSlot(t *testing.T) {
+	f := newFake()
+	v, _ := New("k", f)
+	_ = v.SetTenant("tA", KeyClaudeToken, "tokA")
+	// 具写库权者把 tA 的密文原样拷进 tB 的槽
+	f.tenant["tB/"+KeyClaudeToken] = f.tenant["tA/"+KeyClaudeToken]
+	if got := v.getTenant("tB", KeyClaudeToken); got != "" {
+		t.Fatalf("跨槽搬运的密文不应解出，得 %q", got)
+	}
+	// tA 自身仍可正常解
+	if got := v.getTenant("tA", KeyClaudeToken); got != "tokA" {
+		t.Fatalf("原槽应正常解密，得 %q", got)
+	}
+}
+
 func TestWrongKeyCannotDecrypt(t *testing.T) {
 	f := newFake()
 	v1, _ := New("key-A", f)

@@ -112,9 +112,7 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 	cmd := exec.CommandContext(runCtx, cfg.ClaudeBin(), "-p", prompt, "--dangerously-skip-permissions")
 	cmd.Dir = wt
 	// 注入任务上下文：skill 经 emit-event.sh 用这些把阶段事件 POST 回控制面。
-	// 先剔除宿主继承的 Claude 凭据，避免跨租户串登录态；再按任务归属注入本租户/用户令牌。
-	env := filterEnv(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
-	env = append(env,
+	env := append(os.Environ(),
 		"WF_TASK_ID="+t.ID,
 		"WF_EVENT_URL="+cfg.EventURLBase()+"/internal/tasks/"+t.ID+"/event",
 		"WF_INTERNAL_TOKEN="+cfg.InternalToken(),
@@ -122,8 +120,10 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 	if repo.Base != "" {
 		env = append(env, "WF_PR_BASE="+repo.Base) // 每仓 PR base 覆盖（issue-to-pr 优先取）
 	}
-	// 登录态令牌（非 API）：解析出则注入；为空则回落宿主登录态（如开发机 keychain）。
+	// 登录态令牌（非 API）：解析出租户/用户令牌时，先剔除宿主继承的 Claude 凭据
+	// （防跨租户串登录态），再注入本任务令牌；未解析出则原样保留宿主登录态（单机开发回落）。
 	if tok := c.env.ClaudeToken(t.TenantID, t.CreatedBy); tok != "" {
+		env = filterEnv(env, "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
 	}
 	cmd.Env = env

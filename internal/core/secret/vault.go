@@ -1,5 +1,7 @@
 // Package secret 提供租户/用户凭据的加密存储与「登录态令牌」两级解析。
-// 加密：AES-256-GCM，密钥由 MASTER_KEY 经 SHA-256 派生（任意口令→32 字节）。
+// 加密：AES-256-GCM；密钥由 MASTER_KEY 经 scrypt(慢哈希+盐) 派生，
+// 抬高拖库后离线爆破成本。MASTER_KEY 仍应为高熵随机串（如 openssl rand -hex 32），勿用弱口令。
+// 每条密文以其归属（tenant/user + key）为 GCM AAD 绑定，防具写库权者跨槽搬运密文。
 // 明文不落库、不出本包；store 层只见密文块。
 package secret
 
@@ -7,10 +9,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"io"
+
+	"golang.org/x/crypto/scrypt"
 )
+
+// kdfSalt 是密钥派生的固定盐（防通用彩虹表；主防线仍是高熵 MASTER_KEY + scrypt 慢哈希）。
+var kdfSalt = []byte("ai-workflow/secret/v1")
 
 // KeyClaudeToken 是 Claude 登录态 OAuth 令牌（claude setup-token 生成）在凭据表里的键名。
 const KeyClaudeToken = "CLAUDE_OAUTH_TOKEN"
@@ -34,8 +40,12 @@ func New(masterKey string, st Store) (*Vault, error) {
 	if masterKey == "" {
 		return nil, nil // 上层据 nil 判断「未启用凭据存储」
 	}
-	sum := sha256.Sum256([]byte(masterKey)) // 任意口令 → 32 字节 AES-256 密钥
-	block, err := aes.NewCipher(sum[:])
+	// scrypt 慢哈希派生 32 字节 AES-256 密钥（仅启动时一次，无运行期开销）。
+	key, err := scrypt.Key([]byte(masterKey), kdfSalt, 1<<15, 8, 1, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -46,29 +56,33 @@ func New(masterKey string, st Store) (*Vault, error) {
 	return &Vault{gcm: gcm, st: st}, nil
 }
 
-func (v *Vault) seal(plaintext string) ([]byte, error) {
+// aad 把密文绑定到其归属槽（scope/id/key），作为 GCM 附加认证数据，
+// 使密文换到别的槽后解密即失败，堵住具写库权者的跨槽搬运。
+func aad(scope, id, key string) []byte { return []byte(scope + "/" + id + "/" + key) }
+
+func (v *Vault) seal(plaintext string, aad []byte) ([]byte, error) {
 	nonce := make([]byte, v.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return v.gcm.Seal(nonce, nonce, []byte(plaintext), nil), nil // nonce||ciphertext
+	return v.gcm.Seal(nonce, nonce, []byte(plaintext), aad), nil // nonce||ciphertext
 }
 
-func (v *Vault) open(blob []byte) (string, error) {
+func (v *Vault) open(blob, aad []byte) (string, error) {
 	ns := v.gcm.NonceSize()
 	if len(blob) < ns {
 		return "", errors.New("密文长度不足")
 	}
-	pt, err := v.gcm.Open(nil, blob[:ns], blob[ns:], nil)
+	pt, err := v.gcm.Open(nil, blob[:ns], blob[ns:], aad)
 	if err != nil {
 		return "", err
 	}
 	return string(pt), nil
 }
 
-// SetTenant / SetUser 加密并写入。空明文视为删除（此处简化为写入空块由上层控制）。
+// SetTenant / SetUser 加密并写入。空明文写入空块，功能上等价「已清除」。
 func (v *Vault) SetTenant(tenantID, key, plaintext string) error {
-	enc, err := v.seal(plaintext)
+	enc, err := v.seal(plaintext, aad("tenant", tenantID, key))
 	if err != nil {
 		return err
 	}
@@ -76,20 +90,20 @@ func (v *Vault) SetTenant(tenantID, key, plaintext string) error {
 }
 
 func (v *Vault) SetUser(userID, key, plaintext string) error {
-	enc, err := v.seal(plaintext)
+	enc, err := v.seal(plaintext, aad("user", userID, key))
 	if err != nil {
 		return err
 	}
 	return v.st.PutUserSecret(userID, key, enc)
 }
 
-// getTenant / getUser 返回明文；未配置返回 ""。
+// getTenant / getUser 返回明文；未配置或校验失败返回 ""。
 func (v *Vault) getTenant(tenantID, key string) string {
 	enc, err := v.st.GetTenantSecret(tenantID, key)
 	if err != nil || enc == nil {
 		return ""
 	}
-	pt, err := v.open(enc)
+	pt, err := v.open(enc, aad("tenant", tenantID, key))
 	if err != nil {
 		return ""
 	}
@@ -101,7 +115,7 @@ func (v *Vault) getUser(userID, key string) string {
 	if err != nil || enc == nil {
 		return ""
 	}
-	pt, err := v.open(enc)
+	pt, err := v.open(enc, aad("user", userID, key))
 	if err != nil {
 		return ""
 	}
