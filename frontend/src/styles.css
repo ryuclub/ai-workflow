@@ -187,3 +187,8 @@ button.toggle.off { background: #f1f3f4; border-color: #d0d3d9; color: #9aa0a6; 
 /* Claude 登录态令牌设置 */
 .token-row { margin: 10px 0; }
 .token-row .row-actions { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+
+/* 成员管理 */
+.members { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.members th, .members td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }
+.add-member { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
