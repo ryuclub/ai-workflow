@@ -31,9 +31,41 @@ type Config struct {
 	Default   string            `json:"default"`    // 标题无信号时的默认仓
 	StatusMap map[string]string `json:"status_map"` // 任务态→票源流转名（空=不联动；写错会污染真实票，故默认关闭）
 	Repos     map[string]Repo   `json:"repos"`
-	Env       map[string]string `json:"-"` // 来自 .env，承载凭据/端口/token 等
+	Env       map[string]string `json:"-"` // 来自 .env / 租户密钥，承载凭据/端口/token 等
 	Root      string            `json:"-"` // 仓根目录（解析相对路径用）
+	TenantID  string            `json:"-"` // 非空=按租户解析出的配置；克隆/worktree/日志目录据此命名空间隔离
 }
+
+// tenantSub 在 TenantID 非空时把路径下沉到 <base>/<tenantID>，实现按租户隔离。
+func (c *Config) tenantSub(base string) string {
+	if c.TenantID == "" {
+		return base
+	}
+	return filepath.Join(base, c.TenantID)
+}
+
+// Clone 深拷贝可变部分（Repos/StatusMap/Env），供设置 handler 在副本上改，
+// 避免与编排器并发读同一缓存实例的 map 而 fatal panic。
+func (c *Config) Clone() *Config {
+	nc := *c
+	nc.Repos = make(map[string]Repo, len(c.Repos))
+	for k, v := range c.Repos {
+		nc.Repos[k] = v
+	}
+	nc.StatusMap = make(map[string]string, len(c.StatusMap))
+	for k, v := range c.StatusMap {
+		nc.StatusMap[k] = v
+	}
+	nc.Env = make(map[string]string, len(c.Env))
+	for k, v := range c.Env {
+		nc.Env[k] = v
+	}
+	return &nc
+}
+
+// getCred 取「按租户凭据」：只读该租户 Env，不看进程环境——否则宿主导出的
+// GITHUB_TOKEN/ATLASSIAN_* 等会架空所有租户的隔离凭据。
+func (c *Config) getCred(key string) string { return c.Env[key] }
 
 // Load 读取仓根下的 config.json 与 .claude/ai-workflow/.env。
 // 二者缺失都不致命：返回可用的空配置，由各取值方法兜底。
@@ -137,10 +169,10 @@ func (c *Config) JiraScript() string {
 }
 
 // JiraProject 是默认 JQL 的项目键（无默认值，由租户在 .env/config 配置 JIRA_PROJECT）。
-func (c *Config) JiraProject() string { return c.get("JIRA_PROJECT", "") }
+func (c *Config) JiraProject() string { return c.getCred("JIRA_PROJECT") }
 
 // AtlassianDomain 是 Atlassian 站点域名（如 your-domain.atlassian.net），用于拼 browse 链接。
-func (c *Config) AtlassianDomain() string { return c.get("ATLASSIAN_DOMAIN", "") }
+func (c *Config) AtlassianDomain() string { return c.getCred("ATLASSIAN_DOMAIN") }
 
 // ActiveSource 返回活跃票源（jira / linear），config.json > 环境 > 默认 jira。
 func (c *Config) ActiveSource() string {
@@ -151,10 +183,10 @@ func (c *Config) ActiveSource() string {
 }
 
 // LinearAPIKey 是 Linear Personal API Key。
-func (c *Config) LinearAPIKey() string { return c.get("LINEAR_API_KEY", "") }
+func (c *Config) LinearAPIKey() string { return c.getCred("LINEAR_API_KEY") }
 
 // LinearTeam 是 Linear 团队 key（如 ENG），可空。
-func (c *Config) LinearTeam() string { return c.get("LINEAR_TEAM", "") }
+func (c *Config) LinearTeam() string { return c.getCred("LINEAR_TEAM") }
 
 // SuggestRepo 据票标题预选目标仓（移植自旧 server.py 路由）：
 // 标题含 [<repo-key>] 显式标记优先；否则按各仓 match 关键词；命中唯一才返回，否则回退默认仓。
@@ -199,8 +231,8 @@ func (c *Config) SuggestRepo(title string) string {
 // ClaudeBin 是 claude CLI 可执行名。
 func (c *Config) ClaudeBin() string { return c.get("CLAUDE_BIN", "claude") }
 
-// WorktreeBase 是各任务临时 worktree 的根目录。
-func (c *Config) WorktreeBase() string { return c.get("WORKTREE_BASE", "/tmp/wf-worktrees") }
+// WorktreeBase 是各任务临时 worktree 的根目录（按租户隔离）。
+func (c *Config) WorktreeBase() string { return c.tenantSub(c.get("WORKTREE_BASE", "/tmp/wf-worktrees")) }
 
 // SlackWebhook 为空则不发 Slack。
 func (c *Config) SlackWebhook() string { return c.get("SLACK_WEBHOOK_URL", "") }
@@ -216,19 +248,19 @@ func (c *Config) EventURLBase() string {
 }
 
 // GithubToken 用于自管克隆私有仓与 github API（空则回退 gh 登录态）。
-func (c *Config) GithubToken() string { return c.get("GITHUB_TOKEN", "") }
+func (c *Config) GithubToken() string { return c.getCred("GITHUB_TOKEN") }
 
 // AdminToken 设了则启用公共 API 鉴权（Bearer）。
 func (c *Config) AdminToken() string { return c.get("ADMIN_TOKEN", "") }
 
-// ReposDir 是自管克隆的根目录。
+// ReposDir 是自管克隆的根目录（按租户隔离，避免跨司串仓）。
 func (c *Config) ReposDir() string {
-	return c.get("REPOS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "repos"))
+	return c.tenantSub(c.get("REPOS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "repos")))
 }
 
-// LogsDir 是各任务 claude 输出日志目录。
+// LogsDir 是各任务 claude 输出日志目录（按租户隔离）。
 func (c *Config) LogsDir() string {
-	return c.get("LOGS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "logs"))
+	return c.tenantSub(c.get("LOGS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "logs")))
 }
 
 // MaxConcurrent 是同时跑 claude 的最大任务数（默认 3）。

@@ -59,6 +59,8 @@ type IdentityStore interface {
 	CreateSession(sess *Session) error
 	GetSession(token string) (*Session, error)
 	DeleteSession(token string) error
+	GetTenantConfigJSON(tenantID string) (string, error)
+	PutTenantConfigJSON(tenantID, j string) error
 }
 
 // NewID 生成 16 字节随机十六进制标识（租户/用户 id、会话 token 共用）。
@@ -224,4 +226,26 @@ func (s *SQLite) GetUserSecret(userID, key string) ([]byte, error) {
 		return nil, nil
 	}
 	return enc, err
+}
+
+// ── per-tenant 配置（非机密：source/default/status_map/repos 的 JSON） ──────
+
+// GetTenantConfigJSON 返回某租户的配置 JSON；未设置返回 ("", nil)。
+func (s *SQLite) GetTenantConfigJSON(tenantID string) (string, error) {
+	var j string
+	err := s.db.QueryRow(`SELECT json FROM tenant_configs WHERE tenant_id=?`, tenantID).Scan(&j)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return j, err
+}
+
+func (s *SQLite) PutTenantConfigJSON(tenantID, j string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO tenant_configs(tenant_id,json) VALUES(?,?)
+		 ON CONFLICT(tenant_id) DO UPDATE SET json=excluded.json`,
+		tenantID, j)
+	return err
 }

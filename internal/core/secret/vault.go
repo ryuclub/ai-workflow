@@ -126,6 +126,9 @@ func (v *Vault) getUser(userID, key string) string {
 func (v *Vault) HasTenant(tenantID, key string) bool { return v.getTenant(tenantID, key) != "" }
 func (v *Vault) HasUser(userID, key string) bool     { return v.getUser(userID, key) != "" }
 
+// GetTenant 返回租户某凭据明文（未配置或校验失败返回 ""）。供 Runtime 构造租户级配置。
+func (v *Vault) GetTenant(tenantID, key string) string { return v.getTenant(tenantID, key) }
+
 // ResolveClaudeToken 两级解析登录态令牌：员工个人令牌优先，回落租户共享令牌；都无返回 ""。
 func (v *Vault) ResolveClaudeToken(tenantID, userID string) string {
 	if userID != "" {

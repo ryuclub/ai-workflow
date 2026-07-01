@@ -15,10 +15,10 @@ import (
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 )
 
-// Env 向 runner 提供运行期配置与目标仓本地路径（支持设置热重载与自管克隆）。
+// Env 向 runner 提供运行期配置与目标仓本地路径（按租户解析，支持自管克隆隔离）。
 type Env interface {
-	Config() *config.Config
-	RepoPath(ctx context.Context, github string) (string, error)
+	Config(tenantID string) *config.Config
+	RepoPath(ctx context.Context, tenantID, github string) (string, error)
 	// ClaudeToken 解析该任务应使用的 Claude 登录态令牌（员工个人 > 租户共享 > 空）。
 	ClaudeToken(tenantID, userID string) string
 }
@@ -80,12 +80,12 @@ func filterEnv(env []string, drop ...string) []string {
 }
 
 func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) error {
-	cfg := c.env.Config()
+	cfg := c.env.Config(t.TenantID)
 	repo, ok := cfg.Repos[t.Repo]
 	if !ok {
 		return fmt.Errorf("未登记的仓：%q", t.Repo)
 	}
-	repoPath, err := c.env.RepoPath(ctx, repo.GitHub)
+	repoPath, err := c.env.RepoPath(ctx, t.TenantID, repo.GitHub)
 	if err != nil {
 		return fmt.Errorf("解析仓本地路径失败（%s）：%w", repo.GitHub, err)
 	}
@@ -104,7 +104,7 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 
 	// 注入控制面的 .env（凭据）+ B/C skill 包到 worktree。
 	// skill 包临时注入而非要求目标仓常驻：跑完随 worktree 清理，任何登记仓开箱即用。
-	injectEnv(cfg.Root, wt)
+	injectEnv(cfg, wt)
 	injectSkills(cfg.Root, wt)
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TaskTimeoutMin())*time.Minute)
@@ -170,13 +170,21 @@ func gitC(repoPath string, args ...string) (string, error) {
 	return string(out), err
 }
 
-func injectEnv(root, wt string) {
-	src := filepath.Join(root, ".claude", "ai-workflow", ".env")
+// injectEnv 把「该租户」的凭据写进 worktree 的 .env，供 skill（jira_api.py 等）读取。
+// 按租户注入而非拷全局 .env：避免跨租户串凭据。
+func injectEnv(cfg *config.Config, wt string) {
 	dst := filepath.Join(wt, ".claude", "ai-workflow", ".env")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return
 	}
-	copyFile(src, dst)
+	var b strings.Builder
+	b.WriteString("# 由控制面按租户注入（勿手改）\n")
+	for _, k := range config.CredentialKeys {
+		if v := cfg.Env[k]; v != "" {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+		}
+	}
+	_ = os.WriteFile(dst, []byte(b.String()), 0o600)
 }
 
 // injectSkills 把控制面的 B/C skill 包临时拷进 worktree，使目标仓无需常驻安装。
