@@ -20,7 +20,6 @@ type settingsResp struct {
 	LinearTeam     string            `json:"linear_team"`
 	LinearKeySet   bool              `json:"linear_api_key_set"`
 	GithubTokenSet bool              `json:"github_token_set"`
-	AdminTokenSet  bool              `json:"admin_token_set"`
 	StatusMap      map[string]string `json:"status_map"`
 	MaxConcurrent  int               `json:"max_concurrent"`
 	TaskTimeoutMin int               `json:"task_timeout_min"`
@@ -36,7 +35,6 @@ type settingsReq struct {
 	LinearTeam     string            `json:"linear_team"`
 	LinearAPIKey   string            `json:"linear_api_key"`
 	GithubToken    string            `json:"github_token"`
-	AdminToken     string            `json:"admin_token"`
 	StatusMap      map[string]string `json:"status_map"`
 	MaxConcurrent  int               `json:"max_concurrent"`   // 0=不改
 	TaskTimeoutMin int               `json:"task_timeout_min"` // 0=不改
@@ -92,7 +90,6 @@ func (s *Server) getSettings(c *gin.Context) {
 		LinearTeam:     cfg.LinearTeam(),
 		LinearKeySet:   cfg.LinearAPIKey() != "",
 		GithubTokenSet: cfg.GithubToken() != "",
-		AdminTokenSet:  cfg.AdminToken() != "",
 		StatusMap:      cfg.StatusMap,
 		MaxConcurrent:  cfg.MaxConcurrent(),
 		TaskTimeoutMin: cfg.TaskTimeoutMin(),
