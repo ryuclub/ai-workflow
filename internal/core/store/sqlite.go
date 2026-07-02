@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN review_cursor TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN tenant_id TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN created_by TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN platform_admin INTEGER DEFAULT 0`)
 	// tenant_id 索引须在列存在（含旧库 ALTER 补列）之后建。
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant_id, created_at)`)
 	// 回填历史任务的编号（仅 seq=0 的旧行，按 rowid 赋递增号）。

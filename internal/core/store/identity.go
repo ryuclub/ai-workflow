@@ -24,10 +24,11 @@ type Tenant struct {
 
 // User 是平台自管用户（邮箱+密码）。密码哈希不出 store 层。
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	PasswordHash  string    `json:"-"`
+	PlatformAdmin bool      `json:"platform_admin"` // 平台超管：可开通新租户（首个 bootstrap 用户）
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Membership 是用户在某租户内的成员关系与角色。
@@ -53,9 +54,11 @@ type IdentityStore interface {
 	ListTenants() ([]*Tenant, error)
 	CreateUser(u *User) error
 	GetUserByEmail(email string) (*User, error)
+	GetUserByID(id string) (*User, error)
 	CreateMembership(m *Membership) error
 	GetMembership(userID, tenantID string) (*Membership, error)
 	ListMembershipsByUser(userID string) ([]*Membership, error)
+	ListUserTenants(userID string) ([]*UserTenant, error)
 	ListTenantMembers(tenantID string) ([]*Member, error)
 	DeleteMembership(userID, tenantID string) error
 	CreateSession(sess *Session) error
@@ -105,15 +108,23 @@ func (s *SQLite) ListTenants() ([]*Tenant, error) {
 func (s *SQLite) CreateUser(u *User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO users(id,email,password_hash,created_at) VALUES(?,?,?,?)`,
-		u.ID, u.Email, u.PasswordHash, u.CreatedAt)
+	_, err := s.db.Exec(`INSERT INTO users(id,email,password_hash,platform_admin,created_at) VALUES(?,?,?,?,?)`,
+		u.ID, u.Email, u.PasswordHash, u.PlatformAdmin, u.CreatedAt)
 	return err
 }
 
 func (s *SQLite) GetUserByEmail(email string) (*User, error) {
+	return s.scanUser(s.db.QueryRow(`SELECT id,email,password_hash,platform_admin,created_at FROM users WHERE email=?`, email))
+}
+
+// GetUserByID 供平台权限校验（读 platform_admin）。
+func (s *SQLite) GetUserByID(id string) (*User, error) {
+	return s.scanUser(s.db.QueryRow(`SELECT id,email,password_hash,platform_admin,created_at FROM users WHERE id=?`, id))
+}
+
+func (s *SQLite) scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
-	err := s.db.QueryRow(`SELECT id,email,password_hash,created_at FROM users WHERE email=?`, email).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.PlatformAdmin, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -174,6 +185,34 @@ func (s *SQLite) DeleteMembership(userID, tenantID string) error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM memberships WHERE user_id=? AND tenant_id=?`, userID, tenantID)
 	return err
+}
+
+// UserTenant 是某用户可访问的租户视图（含公司名 + 角色），供前端租户切换/登录展示。
+type UserTenant struct {
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
+	Role     Role   `json:"role"`
+}
+
+// ListUserTenants 返回某用户加入的全部租户（join tenants 取公司名），按公司名排序。
+func (s *SQLite) ListUserTenants(userID string) ([]*UserTenant, error) {
+	rows, err := s.db.Query(
+		`SELECT t.id, t.name, m.role FROM memberships m
+		 JOIN tenants t ON t.id = m.tenant_id
+		 WHERE m.user_id=? ORDER BY t.name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*UserTenant
+	for rows.Next() {
+		var ut UserTenant
+		if err := rows.Scan(&ut.TenantID, &ut.Name, &ut.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, &ut)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLite) ListMembershipsByUser(userID string) ([]*Membership, error) {
