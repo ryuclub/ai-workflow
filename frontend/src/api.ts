@@ -21,6 +21,9 @@ export const clearToken = () => {
 export const getRole = () => localStorage.getItem(ROLE_KEY) || "";
 export const setRole = (r: string) => localStorage.setItem(ROLE_KEY, r);
 export const isAdmin = () => getRole() === "admin";
+const PLATFORM_KEY = "wf.session.platform";
+export const setPlatformAdmin = (v: boolean) => localStorage.setItem(PLATFORM_KEY, v ? "1" : "0");
+export const isPlatformAdmin = () => localStorage.getItem(PLATFORM_KEY) === "1";
 
 export class AuthError extends Error {}
 
@@ -58,7 +61,7 @@ export interface LoginResult {
   role: string;
   tenant_id: string;
   tenants: Membership[];
-  user: { id: string; email: string };
+  user: { id: string; email: string; platform_admin: boolean };
 }
 export const login = (email: string, password: string, tenant_id?: string) =>
   fetch("/api/v1/auth/login", {
@@ -68,7 +71,20 @@ export const login = (email: string, password: string, tenant_id?: string) =>
   }).then(j<LoginResult>);
 export const logout = () => send("POST", "/api/v1/auth/logout").then(j<{ ok: boolean }>);
 export const getMe = () =>
-  get("/api/v1/auth/me").then(j<{ user_id: string; tenant_id: string; role: string }>);
+  get("/api/v1/auth/me").then(
+    j<{ user_id: string; tenant_id: string; role: string; platform_admin: boolean; tenants: Membership[] }>,
+  );
+export const switchTenant = (tenant_id: string) =>
+  send("POST", "/api/v1/auth/switch", { tenant_id }).then(j<{ token: string; tenant_id: string; role: string }>);
+
+// —— 平台管理（平台超管）——
+export interface Tenant { id: string; name: string; created_at: string }
+export const listTenants = () =>
+  get("/api/v1/platform/tenants").then(j<{ tenants: Tenant[] }>);
+export const createTenant = (name: string, admin_email: string, admin_password: string) =>
+  send("POST", "/api/v1/platform/tenants", { name, admin_email, admin_password }).then(
+    j<{ ok: boolean; admin_email: string }>,
+  );
 
 // —— Claude 登录态令牌（租户共享=管理员；个人=本人）——
 export const getTenantClaudeToken = () =>

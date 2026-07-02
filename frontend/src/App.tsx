@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AuthError, clearToken, getAuthStatus, getMe, getPipeline, getSource, getToken, logout, setRole } from "./api";
+import { AuthError, clearToken, getAuthStatus, getMe, getPipeline, getSource, getToken, logout, type Membership, setPlatformAdmin, setRole, setToken, switchTenant } from "./api";
 import HealthPill from "./components/HealthPill";
 import Login from "./components/Login";
 import Settings from "./components/Settings";
@@ -20,6 +20,8 @@ export default function App() {
   const [source, setSource] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [reposVersion, setReposVersion] = useState(0); // 登记仓变更后自增，驱动候选票下拉刷新
+  const [tenants, setTenants] = useState<Membership[]>([]); // 当前用户可切换的租户
+  const [tenantId, setTenantId] = useState(""); // 当前活跃租户
 
   const [width, setWidth] = useState(() => Number(localStorage.getItem(W_KEY)) || 360);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(C_KEY) === "1");
@@ -32,8 +34,11 @@ export default function App() {
         if (!a.auth_required) return setAuthed(true);
         if (!getToken()) return setAuthed(false);
         try {
-          const m = await getMe(); // 验证会话并刷新角色
+          const m = await getMe(); // 验证会话并刷新角色/平台标记/租户列表
           setRole(m.role);
+          setPlatformAdmin(m.platform_admin);
+          setTenants(m.tenants || []);
+          setTenantId(m.tenant_id);
           setAuthed(true);
         } catch (e) {
           setAuthed(e instanceof AuthError ? false : true);
@@ -97,6 +102,27 @@ export default function App() {
         <span className="logo">AI 工作流流水线</span>
         {source && <span className="src-pill">票源：{source}</span>}
         <span style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          {tenants.length > 1 && (
+            <select
+              className="tenant-switch"
+              value={tenantId}
+              title="切换租户"
+              onChange={async (e) => {
+                try {
+                  const r = await switchTenant(e.target.value);
+                  setToken(r.token);
+                  setRole(r.role);
+                  window.location.reload(); // 切租户后整页重载，刷新所有租户相关视图
+                } catch { /* 忽略：无权限等 */ }
+              }}
+            >
+              {tenants.map((t) => (
+                <option key={t.tenant_id} value={t.tenant_id}>
+                  {t.tenant_id === tenantId ? "● " : ""}租户 {t.tenant_id.slice(0, 8)}（{t.role === "admin" ? "管理员" : "成员"}）
+                </option>
+              ))}
+            </select>
+          )}
           <HealthPill />
           <button className={"mini" + (showSettings ? " on-btn" : "")} onClick={() => setShowSettings((v) => !v)}>
             ⚙ 设置

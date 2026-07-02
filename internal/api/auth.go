@@ -158,13 +158,70 @@ func (s *Server) logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// GET /api/v1/auth/me — 当前用户/租户/角色。
+// GET /api/v1/auth/me — 当前用户/租户/角色 + 平台超管标记 + 可切换的租户列表。
 func (s *Server) me(c *gin.Context) {
+	uid := c.GetString(ctxUserID)
+	platform := false
+	if u, _ := s.ids.GetUserByID(uid); u != nil {
+		platform = u.PlatformAdmin
+	}
+	mems, _ := s.ids.ListMembershipsByUser(uid)
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":   c.GetString(ctxUserID),
-		"tenant_id": c.GetString(ctxTenantID),
-		"role":      c.GetString(ctxRole),
+		"user_id":        uid,
+		"tenant_id":      c.GetString(ctxTenantID),
+		"role":           c.GetString(ctxRole),
+		"platform_admin": platform,
+		"tenants":        mems,
 	})
+}
+
+// POST /api/v1/auth/switch — 切换活跃租户（限本人已加入的租户），发新会话 token。
+func (s *Server) switchTenant(c *gin.Context) {
+	var req struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	uid := c.GetString(ctxUserID)
+	m, err := s.ids.GetMembership(uid, req.TenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if m == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无该租户成员资格"})
+		return
+	}
+	sess := &store.Session{
+		Token:     store.NewID() + store.NewID(),
+		UserID:    uid,
+		TenantID:  req.TenantID,
+		Role:      m.Role,
+		ExpiresAt: time.Now().Add(sessionTTL),
+	}
+	if err := s.ids.CreateSession(sess); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"token": sess.Token, "tenant_id": req.TenantID, "role": m.Role})
+}
+
+// requirePlatformAdmin 在 requireAuth 之后，要求平台超管（可开通租户）。
+func (s *Server) requirePlatformAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		u, err := s.ids.GetUserByID(c.GetString(ctxUserID))
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if u == nil || !u.PlatformAdmin {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "需要平台管理员权限"})
+			return
+		}
+		c.Next()
+	}
 }
 
 // SeedBootstrap 在无任何用户时，据环境变量建首个租户 + 管理员（平台手动开通入口），
@@ -194,7 +251,7 @@ func SeedBootstrap(ids store.IdentityStore, base *config.Config, vault *secret.V
 	if err != nil {
 		return err
 	}
-	user := &store.User{ID: store.NewID(), Email: strings.ToLower(email), PasswordHash: ph, CreatedAt: now}
+	user := &store.User{ID: store.NewID(), Email: strings.ToLower(email), PasswordHash: ph, PlatformAdmin: true, CreatedAt: now}
 	if err := ids.CreateUser(user); err != nil {
 		return err
 	}

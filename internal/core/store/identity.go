@@ -24,10 +24,11 @@ type Tenant struct {
 
 // User 是平台自管用户（邮箱+密码）。密码哈希不出 store 层。
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	PasswordHash  string    `json:"-"`
+	PlatformAdmin bool      `json:"platform_admin"` // 平台超管：可开通新租户（首个 bootstrap 用户）
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Membership 是用户在某租户内的成员关系与角色。
@@ -53,6 +54,7 @@ type IdentityStore interface {
 	ListTenants() ([]*Tenant, error)
 	CreateUser(u *User) error
 	GetUserByEmail(email string) (*User, error)
+	GetUserByID(id string) (*User, error)
 	CreateMembership(m *Membership) error
 	GetMembership(userID, tenantID string) (*Membership, error)
 	ListMembershipsByUser(userID string) ([]*Membership, error)
@@ -105,15 +107,23 @@ func (s *SQLite) ListTenants() ([]*Tenant, error) {
 func (s *SQLite) CreateUser(u *User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO users(id,email,password_hash,created_at) VALUES(?,?,?,?)`,
-		u.ID, u.Email, u.PasswordHash, u.CreatedAt)
+	_, err := s.db.Exec(`INSERT INTO users(id,email,password_hash,platform_admin,created_at) VALUES(?,?,?,?,?)`,
+		u.ID, u.Email, u.PasswordHash, u.PlatformAdmin, u.CreatedAt)
 	return err
 }
 
 func (s *SQLite) GetUserByEmail(email string) (*User, error) {
+	return s.scanUser(s.db.QueryRow(`SELECT id,email,password_hash,platform_admin,created_at FROM users WHERE email=?`, email))
+}
+
+// GetUserByID 供平台权限校验（读 platform_admin）。
+func (s *SQLite) GetUserByID(id string) (*User, error) {
+	return s.scanUser(s.db.QueryRow(`SELECT id,email,password_hash,platform_admin,created_at FROM users WHERE id=?`, id))
+}
+
+func (s *SQLite) scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
-	err := s.db.QueryRow(`SELECT id,email,password_hash,created_at FROM users WHERE email=?`, email).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.PlatformAdmin, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
