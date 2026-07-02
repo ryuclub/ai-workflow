@@ -22,7 +22,6 @@ const SECTIONS: [string, string][] = [
   ["sec-github", "GitHub"],
   ["sec-claude", "Claude 令牌"],
   ["sec-members", "成员"],
-  ["sec-access", "访问控制"],
   ["sec-run", "运行"],
   ["sec-statusmap", "状态联动"],
   ["sec-repos", "登记仓库"],
@@ -89,7 +88,7 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
       const payload: Record<string, string> = {};
       for (const k of ["source", "jira_domain", "jira_user", "jira_project", "linear_team"])
         if (f[k] !== undefined) payload[k] = f[k];
-      for (const k of ["jira_api_key", "linear_api_key", "github_token", "admin_token"])
+      for (const k of ["jira_api_key", "linear_api_key", "github_token"])
         if (f[k]) payload[k] = f[k];
       const p2 = payload as Record<string, unknown>;
       if (f.max_concurrent) p2.max_concurrent = Number(f.max_concurrent);
@@ -98,7 +97,7 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
       const v = await putSettings(p2);
       setS(v);
       setSmap(v.status_map || {});
-      setF((p) => ({ ...p, jira_api_key: "", linear_api_key: "", github_token: "", admin_token: "" }));
+      setF((p) => ({ ...p, jira_api_key: "", linear_api_key: "", github_token: "" }));
       flash("已保存并重载");
     } catch (e) {
       flash("保存失败：" + (e as Error).message);
@@ -233,12 +232,6 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
       <ClaudeToken />
 
       {isAdmin() && <Members />}
-
-      <section id="sec-access" className="card">
-        <h3>访问控制</h3>
-        <label>Admin Token<input type="password" value={f.admin_token ?? ""} onChange={(e) => set("admin_token", e.target.value)} placeholder={mask(s.admin_token_set)} /></label>
-        <div className="hint">（已弃用）鉴权现由用户账号 + 会话接管；此项不再控制登录，仅保留兼容。</div>
-      </section>
 
       <section id="sec-run" className="card">
         <h3>运行</h3>

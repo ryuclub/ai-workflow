@@ -106,7 +106,6 @@ export interface SettingsView {
   linear_team: string;
   linear_api_key_set: boolean;
   github_token_set: boolean;
-  admin_token_set: boolean;
   status_map: Record<string, string> | null;
   max_concurrent: number;
   task_timeout_min: number;

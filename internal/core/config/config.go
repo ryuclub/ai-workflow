@@ -250,9 +250,6 @@ func (c *Config) EventURLBase() string {
 // GithubToken 用于自管克隆私有仓与 github API（空则回退 gh 登录态）。
 func (c *Config) GithubToken() string { return c.getCred("GITHUB_TOKEN") }
 
-// AdminToken 设了则启用公共 API 鉴权（Bearer）。
-func (c *Config) AdminToken() string { return c.get("ADMIN_TOKEN", "") }
-
 // ReposDir 是自管克隆的根目录（按租户隔离，避免跨司串仓）。
 func (c *Config) ReposDir() string {
 	return c.tenantSub(c.get("REPOS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "repos")))
