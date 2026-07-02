@@ -19,8 +19,9 @@ import (
 type Env interface {
 	Config(tenantID string) *config.Config
 	RepoPath(ctx context.Context, tenantID, github string) (string, error)
-	// ClaudeToken 解析该任务应使用的 Claude 登录态令牌（员工个人 > 租户共享 > 空）。
+	// ClaudeToken / GithubToken 解析该任务应使用的令牌（员工个人 > 租户共享 > 空）。
 	ClaudeToken(tenantID, userID string) string
+	GithubToken(tenantID, userID string) string
 }
 
 // Claude 在目标仓的临时 worktree 内跑 claude -p（真实实现）。
@@ -125,6 +126,11 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 	if tok := c.env.ClaudeToken(t.TenantID, t.CreatedBy); tok != "" {
 		env = filterEnv(env, "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
+	}
+	// GitHub token（两级：员工个人 > 租户共享）：注入给 worktree 内的 gh/git（PR 归属到该令牌身份）。
+	if tok := c.env.GithubToken(t.TenantID, t.CreatedBy); tok != "" {
+		env = filterEnv(env, "GITHUB_TOKEN", "GH_TOKEN")
+		env = append(env, "GITHUB_TOKEN="+tok, "GH_TOKEN="+tok)
 	}
 	cmd.Env = env
 	var buf bytes.Buffer

@@ -19,10 +19,10 @@ type TenantConfigStore interface {
 }
 
 // tenantRT 是某租户解析出的运行期实例。
+// gh 不在此缓存：GitHub 客户端按「租户共享 + 用户个人」两级令牌逐次构建（见 Github）。
 type tenantRT struct {
 	cfg  *config.Config
 	prov source.Provider
-	gh   *github.Client
 	repo *repomanager.Manager
 }
 
@@ -112,8 +112,7 @@ func (rt *Runtime) resolve(tenantID string) *tenantRT {
 	t := &tenantRT{
 		cfg:  cfg,
 		prov: prov,
-		gh:   github.NewWithToken(cfg.GithubToken()),
-		repo: repomanager.New(cfg.ReposDir(), cfg.GithubToken()),
+		repo: repomanager.New(cfg.ReposDir(), cfg.GithubToken()), // 克隆用租户共享令牌（公司仓）
 	}
 	rt.mu.Lock()
 	rt.cache[tenantID] = t
@@ -121,10 +120,26 @@ func (rt *Runtime) resolve(tenantID string) *tenantRT {
 	return t
 }
 
-// Config / Provider / Github 按租户返回。tenantID 为空返回全局模板配置（运行期操作键）。
+// Config / Provider 按租户返回。tenantID 为空返回全局模板配置（运行期操作键）。
 func (rt *Runtime) Config(tenantID string) *config.Config    { return rt.resolve(tenantID).cfg }
 func (rt *Runtime) Provider(tenantID string) source.Provider { return rt.resolve(tenantID).prov }
-func (rt *Runtime) Github(tenantID string) *github.Client    { return rt.resolve(tenantID).gh }
+
+// GithubToken 两级解析该(租户,用户)应使用的 GitHub token：用户个人 > 租户共享 > 空。
+func (rt *Runtime) GithubToken(tenantID, userID string) string {
+	tenantShared := rt.resolve(tenantID).cfg.GithubToken()
+	rt.mu.RLock()
+	v := rt.vault
+	rt.mu.RUnlock()
+	if v == nil {
+		return tenantShared
+	}
+	return v.ResolveGithubToken(userID, tenantShared)
+}
+
+// Github 按(租户,用户)两级令牌构建 GitHub 客户端（逐次构建，NewWithToken 很轻）。
+func (rt *Runtime) Github(tenantID, userID string) *github.Client {
+	return github.NewWithToken(rt.GithubToken(tenantID, userID))
+}
 
 // RepoPath 返回某租户自管的主仓克隆路径（按 GitHub 地址；克隆目录已按租户隔离）。
 func (rt *Runtime) RepoPath(ctx context.Context, tenantID, githubFull string) (string, error) {
