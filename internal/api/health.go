@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ryuclub/ai-workflow/internal/core/secret"
 	"github.com/gin-gonic/gin"
 )
 
@@ -73,12 +74,15 @@ func (h *healthState) set(c healthCheck) {
 
 // probeGithub：按(租户,用户)两级令牌探测；probeSource：按租户；probeClaude：按用户令牌。
 func (s *Server) probeGithub(ctx context.Context, h *healthState, tenantID, userID string) {
-	gh := s.deps.Github(tenantID, userID)
-	if gh == nil {
+	// 按「解析出的令牌是否存在」判未配置——GitHub 客户端恒非 nil，若无令牌 WhoAmI 会
+	// 回落宿主 gh 登录态、误显运维身份，故先判令牌串。
+	hasTenant := s.deps.Config(tenantID).GithubToken() != ""
+	hasUser := s.vault != nil && s.vault.HasUser(userID, secret.KeyGithubToken)
+	if !hasTenant && !hasUser {
 		h.set(healthCheck{"github", false, "未配置 GitHub token（公司或个人）"})
 		return
 	}
-	login, err := gh.WhoAmI(ctx)
+	login, err := s.deps.Github(tenantID, userID).WhoAmI(ctx)
 	if err != nil {
 		h.set(healthCheck{"github", false, "未认证：" + tailErr(err)})
 		return

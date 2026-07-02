@@ -127,9 +127,10 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 		env = filterEnv(env, "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
 	}
-	// GitHub token（两级：员工个人 > 租户共享）：注入给 worktree 内的 gh/git（PR 归属到该令牌身份）。
+	// GitHub token（两级：员工个人 > 租户共享）：总是先剔除宿主 GITHUB_TOKEN/GH_TOKEN
+	// （写能力,防串宿主/跨租户凭据）,解析出则注入给 worktree 内的 gh。
+	env = filterEnv(env, "GITHUB_TOKEN", "GH_TOKEN")
 	if tok := c.env.GithubToken(t.TenantID, t.CreatedBy); tok != "" {
-		env = filterEnv(env, "GITHUB_TOKEN", "GH_TOKEN")
 		env = append(env, "GITHUB_TOKEN="+tok, "GH_TOKEN="+tok)
 	}
 	cmd.Env = env
@@ -186,6 +187,11 @@ func injectEnv(cfg *config.Config, wt string) {
 	var b strings.Builder
 	b.WriteString("# 由控制面按租户注入（勿手改）\n")
 	for _, k := range config.CredentialKeys {
+		// GitHub token 走进程级两级注入（个人 > 租户），不写进 .env：
+		// 否则租户共享令牌明文落文件、且会与进程级个人令牌冲突架空归属。
+		if k == "GITHUB_TOKEN" {
+			continue
+		}
 		if v := cfg.Env[k]; v != "" {
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 		}
