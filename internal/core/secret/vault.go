@@ -21,6 +21,9 @@ var kdfSalt = []byte("ai-workflow/secret/v1")
 // KeyClaudeToken 是 Claude 登录态 OAuth 令牌（claude setup-token 生成）在凭据表里的键名。
 const KeyClaudeToken = "CLAUDE_OAUTH_TOKEN"
 
+// KeyGithubToken 是 GitHub token 在凭据表里的键名（租户共享 + 用户个人两级）。
+const KeyGithubToken = "GITHUB_TOKEN"
+
 // Store 是密文凭据的持久化接口（由 store.SQLite 实现）。Get 未命中返回 (nil, nil)。
 type Store interface {
 	PutTenantSecret(tenantID, key string, enc []byte) error
@@ -126,8 +129,20 @@ func (v *Vault) getUser(userID, key string) string {
 func (v *Vault) HasTenant(tenantID, key string) bool { return v.getTenant(tenantID, key) != "" }
 func (v *Vault) HasUser(userID, key string) bool     { return v.getUser(userID, key) != "" }
 
-// GetTenant 返回租户某凭据明文（未配置或校验失败返回 ""）。供 Runtime 构造租户级配置。
+// GetTenant / GetUser 返回某凭据明文（未配置或校验失败返回 ""）。
 func (v *Vault) GetTenant(tenantID, key string) string { return v.getTenant(tenantID, key) }
+func (v *Vault) GetUser(userID, key string) string     { return v.getUser(userID, key) }
+
+// ResolveGithubToken 两级解析 GitHub token：用户个人 > 租户共享 > 空（空则回退 gh 登录态）。
+// tenantShared 由调用方传入（来自租户配置 cfg.GithubToken()，避免本包依赖 config）。
+func (v *Vault) ResolveGithubToken(userID, tenantShared string) string {
+	if userID != "" {
+		if tok := v.getUser(userID, KeyGithubToken); tok != "" {
+			return tok
+		}
+	}
+	return tenantShared
+}
 
 // ResolveClaudeToken 两级解析登录态令牌：员工个人令牌优先，回落租户共享令牌；都无返回 ""。
 func (v *Vault) ResolveClaudeToken(tenantID, userID string) string {

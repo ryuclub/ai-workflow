@@ -34,9 +34,9 @@ const maxReviewRounds = 5
 
 // Deps 提供随设置热重载而变的依赖（配置 / 票源 / GitHub 客户端）。
 type Deps interface {
-	Config(tenantID string) *config.Config    // tenantID 为空返回全局模板（运行期操作键）
-	Provider(tenantID string) source.Provider // 按租户票源
-	Github(tenantID string) *github.Client    // 按租户 GitHub 客户端
+	Config(tenantID string) *config.Config        // tenantID 为空返回全局模板（运行期操作键）
+	Provider(tenantID string) source.Provider     // 按租户票源
+	Github(tenantID, userID string) *github.Client // 按(租户,用户)两级令牌的 GitHub 客户端
 }
 
 // Orchestrator 持有依赖并驱动任务状态机。
@@ -225,7 +225,7 @@ func (o *Orchestrator) Approve(ctx context.Context, taskID string) error {
 	}
 	if t.IssueNum > 0 {
 		gh := o.deps.Config(t.TenantID).Repos[t.Repo].GitHub
-		if err := o.deps.Github(t.TenantID).SetLabels(ctx, gh, t.IssueNum, []string{LabelApproved}, []string{LabelPending}); err != nil {
+		if err := o.deps.Github(t.TenantID, t.CreatedBy).SetLabels(ctx, gh, t.IssueNum, []string{LabelApproved}, []string{LabelPending}); err != nil {
 			return fmt.Errorf("切换 已审核 标签失败: %w", err)
 		}
 	}
@@ -333,7 +333,7 @@ func (o *Orchestrator) pollPRReviews(ctx context.Context) {
 		byKey[t.ID] = t
 	}
 	for tenantID, refs := range refsByTenant {
-		gh := o.deps.Github(tenantID)
+		gh := o.deps.Github(tenantID, "") // 读 PR 决议用租户共享令牌
 		if gh == nil {
 			continue
 		}

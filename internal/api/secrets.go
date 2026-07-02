@@ -69,3 +69,28 @@ func (s *Server) getMyClaudeToken(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"configured": s.vault.HasUser(c.GetString(ctxUserID), secret.KeyClaudeToken)})
 }
+
+// PUT /api/v1/me/github-token — 设置本人个人 GitHub token（覆盖公司共享）。
+func (s *Server) putMyGithubToken(c *gin.Context) {
+	if !s.vaultReady(c) {
+		return
+	}
+	var req tokenReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.vault.SetUser(c.GetString(ctxUserID), secret.KeyGithubToken, req.Token); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "configured": req.Token != ""})
+}
+
+// GET /api/v1/me/github-token — 探测本人是否已配个人 GitHub token（不回明文）。
+func (s *Server) getMyGithubToken(c *gin.Context) {
+	if !s.vaultReady(c) {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"configured": s.vault.HasUser(c.GetString(ctxUserID), secret.KeyGithubToken)})
+}
