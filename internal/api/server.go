@@ -19,10 +19,10 @@ import (
 
 // Deps 提供随设置热重载而变的依赖；Reload 在设置变更后重建。
 type Deps interface {
-	Config(tenantID string) *config.Config    // tenantID 为空返回全局模板（运行期操作键）
-	Provider(tenantID string) source.Provider // 按租户票源
-	Github(tenantID string) *github.Client    // 按租户 GitHub 客户端
-	Reload(tenantID string) error             // 使某租户配置缓存失效；空=重载全局模板
+	Config(tenantID string) *config.Config         // tenantID 为空返回全局模板（运行期操作键）
+	Provider(tenantID string) source.Provider      // 按租户票源
+	Github(tenantID, userID string) *github.Client // 按(租户,用户)两级令牌的 GitHub 客户端
+	Reload(tenantID string) error                  // 使某租户配置缓存失效；空=重载全局模板
 }
 
 // Server 持有 API 处理器所需的 core 依赖。
@@ -33,18 +33,20 @@ type Server struct {
 	vault  *secret.Vault // 凭据保险箱；未配 MASTER_KEY 时为 nil
 	bus    *events.Bus
 	orch   *orchestrator.Orchestrator
-	health *healthState
+	health *healthRegistry
 }
 
 // NewServer 组装依赖。deps 在每次取用时返回当前生效配置/票源/客户端。
 func NewServer(deps Deps, st store.Store, ids store.IdentityStore, vault *secret.Vault, bus *events.Bus, orch *orchestrator.Orchestrator) *Server {
-	return &Server{deps: deps, st: st, ids: ids, vault: vault, bus: bus, orch: orch, health: newHealth()}
+	return &Server{deps: deps, st: st, ids: ids, vault: vault, bus: bus, orch: orch, health: newHealthRegistry()}
 }
 
 // cfg/src/gh 按当前会话租户解析。tid 从 requireAuth 注入的 ctx 取。
 func (s *Server) cfg(c *gin.Context) *config.Config  { return s.deps.Config(c.GetString(ctxTenantID)) }
 func (s *Server) src(c *gin.Context) source.Provider { return s.deps.Provider(c.GetString(ctxTenantID)) }
-func (s *Server) gh(c *gin.Context) *github.Client   { return s.deps.Github(c.GetString(ctxTenantID)) }
+func (s *Server) gh(c *gin.Context) *github.Client {
+	return s.deps.Github(c.GetString(ctxTenantID), c.GetString(ctxUserID))
+}
 
 // srcReady 取当前租户票源；未配置（源非法/未建）返回 nil 并已写好 503，调用方直接 return。
 func (s *Server) srcReady(c *gin.Context) source.Provider {
@@ -91,6 +93,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.PUT("/settings/claude-token", s.requireAdminRole(), s.putTenantClaudeToken)
 		v1.GET("/me/claude-token", s.getMyClaudeToken)
 		v1.PUT("/me/claude-token", s.putMyClaudeToken)
+		v1.GET("/me/github-token", s.getMyGithubToken)
+		v1.PUT("/me/github-token", s.putMyGithubToken)
 		// 成员管理（租户管理员）。
 		v1.GET("/members", s.requireAdminRole(), s.listMembers)
 		v1.POST("/members", s.requireAdminRole(), s.addMember)

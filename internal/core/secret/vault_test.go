@@ -82,6 +82,28 @@ func TestAADRejectsCrossSlot(t *testing.T) {
 	}
 }
 
+// TestResolveGithubTwoTier：GitHub token 个人 > 公司共享 > 空。
+func TestResolveGithubTwoTier(t *testing.T) {
+	v, _ := New("k", newFake())
+	// 无个人 → 用传入的公司共享
+	if got := v.ResolveGithubToken("u1", "shared-tok"); got != "shared-tok" {
+		t.Fatalf("应回落公司共享，得 %q", got)
+	}
+	// 有个人 → 覆盖
+	_ = v.SetUser("u1", KeyGithubToken, "my-tok")
+	if got := v.ResolveGithubToken("u1", "shared-tok"); got != "my-tok" {
+		t.Fatalf("个人应覆盖公司，得 %q", got)
+	}
+	// 另一用户无个人 → 仍用公司共享
+	if got := v.ResolveGithubToken("u2", "shared-tok"); got != "shared-tok" {
+		t.Fatalf("u2 应回落公司，得 %q", got)
+	}
+	// userID 空(如后台轮询) → 直接公司共享
+	if got := v.ResolveGithubToken("", "shared-tok"); got != "shared-tok" {
+		t.Fatalf("空用户应用公司共享，得 %q", got)
+	}
+}
+
 func TestWrongKeyCannotDecrypt(t *testing.T) {
 	f := newFake()
 	v1, _ := New("key-A", f)

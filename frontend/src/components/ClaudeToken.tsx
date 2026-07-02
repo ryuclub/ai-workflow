@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import {
   getMyClaudeToken,
+  getMyGithubToken,
   getTenantClaudeToken,
   isAdmin,
   putMyClaudeToken,
+  putMyGithubToken,
   putTenantClaudeToken,
 } from "../api";
 
@@ -79,28 +81,35 @@ function TokenRow({
   );
 }
 
-// ClaudeToken：公司共享令牌（仅管理员可设）+ 个人令牌（本人）。均为「登录态」令牌，非 API。
+// ClaudeToken：登录态令牌与个人凭据。Claude 令牌(公司共享+个人)；GitHub token 个人覆盖。
+// 均「公司共享 > 个人」两级(GitHub 公司令牌在上面「GitHub」分区设),加密存储不回显。
 export default function ClaudeToken() {
   return (
     <section id="sec-claude" className="card">
-      <h3>Claude 登录态令牌</h3>
+      <h3>登录态令牌 / 个人凭据</h3>
       <div className="hint">
-        用订阅登录态令牌（<code>claude setup-token</code> 生成）跑 agent，非 API 计费。
-        解析优先级：<b>个人令牌 &gt; 公司共享令牌</b>。令牌加密存储，不回显明文。
+        Claude 用订阅登录态令牌（<code>claude setup-token</code> 生成）跑 agent，非 API 计费。
+        解析优先级均为 <b>个人 &gt; 公司共享</b>。令牌加密存储，不回显明文。
       </div>
       {isAdmin() && (
         <TokenRow
-          label="公司共享令牌（管理员）"
-          hint="全租户成员默认使用；未填个人令牌者回落到它。共享一个订阅即共享其速率额度。"
+          label="Claude 公司共享令牌（管理员）"
+          hint="全公司成员默认使用；未填个人令牌者回落到它。共享一个订阅即共享其速率额度。"
           probe={getTenantClaudeToken}
           save={(t) => putTenantClaudeToken(t).then((r) => ({ configured: r.configured }))}
         />
       )}
       <TokenRow
-        label="我的个人令牌"
+        label="我的 Claude 个人令牌"
         hint="填了则本人任务优先用它（独立额度）；留空则用公司共享令牌。"
         probe={getMyClaudeToken}
         save={(t) => putMyClaudeToken(t).then((r) => ({ configured: r.configured }))}
+      />
+      <TokenRow
+        label="我的 GitHub 个人 token"
+        hint="填了则本人任务的 GitHub 操作（建 PR / 打标签等）用自己的身份；留空则用公司共享 GitHub token。"
+        probe={getMyGithubToken}
+        save={(t) => putMyGithubToken(t).then((r) => ({ configured: r.configured }))}
       />
     </section>
   );

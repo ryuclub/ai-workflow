@@ -95,6 +95,10 @@ export const getMyClaudeToken = () =>
   get("/api/v1/me/claude-token").then(j<{ configured: boolean }>);
 export const putMyClaudeToken = (token: string) =>
   send("PUT", "/api/v1/me/claude-token", { token }).then(j<{ ok: boolean; configured: boolean }>);
+export const getMyGithubToken = () =>
+  get("/api/v1/me/github-token").then(j<{ configured: boolean }>);
+export const putMyGithubToken = (token: string) =>
+  send("PUT", "/api/v1/me/github-token", { token }).then(j<{ ok: boolean; configured: boolean }>);
 
 // —— 成员管理（租户管理员）——
 export interface Member { user_id: string; email: string; role: string }
