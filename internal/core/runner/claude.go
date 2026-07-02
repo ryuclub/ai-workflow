@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ryuclub/ai-workflow/internal/core/config"
+	"github.com/ryuclub/ai-workflow/internal/core/gitauth"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 )
 
@@ -128,10 +129,13 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
 	}
 	// GitHub token（两级：员工个人 > 租户共享）：总是先剔除宿主 GITHUB_TOKEN/GH_TOKEN
-	// （写能力,防串宿主/跨租户凭据）,解析出则注入给 worktree 内的 gh。
+	// 及继承的 GIT_CONFIG_*（写能力,防串宿主/跨租户凭据）；解析出则注入——
+	// GH_TOKEN 给 gh，GIT_CONFIG_* 给 git push/fetch（经 http.extraheader,故也按该身份走）。
 	env = filterEnv(env, "GITHUB_TOKEN", "GH_TOKEN")
+	env = filterEnv(env, gitauth.EnvKeys...)
 	if tok := c.env.GithubToken(t.TenantID, t.CreatedBy); tok != "" {
 		env = append(env, "GITHUB_TOKEN="+tok, "GH_TOKEN="+tok)
+		env = append(env, gitauth.ConfigEnv(tok)...)
 	}
 	cmd.Env = env
 	var buf bytes.Buffer
