@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/ryuclub/ai-workflow/internal/core/gitauth"
 )
 
 // Manager 在受管目录下维护各仓的本地克隆。
@@ -41,10 +43,9 @@ func (m *Manager) localPath(full string) string {
 	return filepath.Join(m.dir, strings.ReplaceAll(full, "/", "__"))
 }
 
+// cloneURL 恒为无令牌 URL：认证经 http.extraheader（-c 参数）注入，token 不落 .git/config，
+// 使 worktree 继承的 remote 无内嵌凭据——git push/fetch 由 skill 进程按任务解析令牌认证。
 func (m *Manager) cloneURL(full string) string {
-	if m.token != "" {
-		return fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", m.token, full)
-	}
 	return fmt.Sprintf("https://github.com/%s.git", full)
 }
 
@@ -57,31 +58,40 @@ func (m *Manager) EnsureLocal(ctx context.Context, full string) (string, error) 
 	lk := m.lockFor(path) // 同一仓的 clone/fetch 串行
 	lk.Lock()
 	defer lk.Unlock()
+	// 认证经 GIT_CONFIG_* 环境注入 http.extraheader（token 不进 argv、不落 .git/config）。
+	var gitEnv []string
+	if e := gitauth.ConfigEnv(m.token); e != nil {
+		gitEnv = append(os.Environ(), e...)
+	}
 	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
-		// 已克隆 → fetch 更新（失败不致命，用现有副本继续）
-		_ = run(ctx, path, "git", "fetch", "--prune", "origin")
+		// 已克隆：先把 origin 抹成无令牌 URL（清除历史版本可能内嵌的旧令牌，幂等），再 fetch。
+		_ = run(ctx, path, gitEnv, "git", "remote", "set-url", "origin", m.cloneURL(full))
+		_ = run(ctx, path, gitEnv, "git", "fetch", "--prune", "origin") // 失败不致命，用现有副本继续
 		return path, nil
 	}
 	if err := os.MkdirAll(m.dir, 0o755); err != nil {
 		return "", err
 	}
-	// 有 token → git clone 带 token 的 URL；无 token → gh repo clone（复用 gh 登录态，支持私有仓）。
+	// 有 token → git clone 无令牌 URL + extraheader 认证；无 token → gh repo clone（复用 gh 登录态）。
 	if m.token != "" {
-		if err := run(ctx, "", "git", "clone", "--quiet", m.cloneURL(full), path); err != nil {
+		if err := run(ctx, "", gitEnv, "git", "clone", "--quiet", m.cloneURL(full), path); err != nil {
 			return "", fmt.Errorf("克隆 %s 失败: %w", full, err)
 		}
 	} else {
-		if err := run(ctx, "", "gh", "repo", "clone", full, path); err != nil {
+		if err := run(ctx, "", nil, "gh", "repo", "clone", full, path); err != nil {
 			return "", fmt.Errorf("gh 克隆 %s 失败（检查 gh 登录或配 GITHUB_TOKEN）: %w", full, err)
 		}
 	}
 	return path, nil
 }
 
-func run(ctx context.Context, dir, name string, args ...string) error {
+func run(ctx context.Context, dir string, env []string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if env != nil {
+		cmd.Env = env
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
