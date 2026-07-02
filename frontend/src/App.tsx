@@ -118,7 +118,7 @@ export default function App() {
             >
               {tenants.map((t) => (
                 <option key={t.tenant_id} value={t.tenant_id}>
-                  {t.tenant_id === tenantId ? "● " : ""}租户 {t.tenant_id.slice(0, 8)}（{t.role === "admin" ? "管理员" : "成员"}）
+                  {t.tenant_id === tenantId ? "● " : ""}{t.name}（{t.role === "admin" ? "管理员" : "成员"}）
                 </option>
               ))}
             </select>

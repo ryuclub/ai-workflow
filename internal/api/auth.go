@@ -101,7 +101,7 @@ func (s *Server) login(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "邮箱或密码错误"})
 		return
 	}
-	mems, err := s.ids.ListMembershipsByUser(u.ID)
+	mems, err := s.ids.ListUserTenants(u.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -165,7 +165,7 @@ func (s *Server) me(c *gin.Context) {
 	if u, _ := s.ids.GetUserByID(uid); u != nil {
 		platform = u.PlatformAdmin
 	}
-	mems, _ := s.ids.ListMembershipsByUser(uid)
+	mems, _ := s.ids.ListUserTenants(uid)
 	c.JSON(http.StatusOK, gin.H{
 		"user_id":        uid,
 		"tenant_id":      c.GetString(ctxTenantID),

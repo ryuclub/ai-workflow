@@ -58,6 +58,7 @@ type IdentityStore interface {
 	CreateMembership(m *Membership) error
 	GetMembership(userID, tenantID string) (*Membership, error)
 	ListMembershipsByUser(userID string) ([]*Membership, error)
+	ListUserTenants(userID string) ([]*UserTenant, error)
 	ListTenantMembers(tenantID string) ([]*Member, error)
 	DeleteMembership(userID, tenantID string) error
 	CreateSession(sess *Session) error
@@ -184,6 +185,34 @@ func (s *SQLite) DeleteMembership(userID, tenantID string) error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM memberships WHERE user_id=? AND tenant_id=?`, userID, tenantID)
 	return err
+}
+
+// UserTenant 是某用户可访问的租户视图（含公司名 + 角色），供前端租户切换/登录展示。
+type UserTenant struct {
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
+	Role     Role   `json:"role"`
+}
+
+// ListUserTenants 返回某用户加入的全部租户（join tenants 取公司名），按公司名排序。
+func (s *SQLite) ListUserTenants(userID string) ([]*UserTenant, error) {
+	rows, err := s.db.Query(
+		`SELECT t.id, t.name, m.role FROM memberships m
+		 JOIN tenants t ON t.id = m.tenant_id
+		 WHERE m.user_id=? ORDER BY t.name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*UserTenant
+	for rows.Next() {
+		var ut UserTenant
+		if err := rows.Scan(&ut.TenantID, &ut.Name, &ut.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, &ut)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLite) ListMembershipsByUser(userID string) ([]*Membership, error) {

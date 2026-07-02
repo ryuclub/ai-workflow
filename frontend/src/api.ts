@@ -55,7 +55,7 @@ export const getAuthStatus = () =>
   fetch("/api/v1/auth/status").then(j<{ auth_required: boolean; bootstrapped: boolean }>);
 
 // —— 登录会话 ——
-export interface Membership { user_id: string; tenant_id: string; role: string }
+export interface Membership { tenant_id: string; name: string; role: string }
 export interface LoginResult {
   token: string;
   role: string;

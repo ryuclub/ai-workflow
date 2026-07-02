@@ -40,21 +40,22 @@ func (s *Server) createTenant(c *gin.Context) {
 		return
 	}
 	now := time.Now()
-	tenant := &store.Tenant{ID: store.NewID(), Name: name, CreatedAt: now}
-	if err := s.ids.CreateTenant(tenant); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "建租户失败：" + err.Error()})
-		return
-	}
+	// 先解析/校验管理员,再建租户——避免校验失败留下无管理员的孤儿租户。
 	u, err := s.ids.GetUserByEmail(email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if u == nil && len(req.AdminPassword) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新管理员需设至少 6 位初始密码"})
+		return
+	}
+	tenant := &store.Tenant{ID: store.NewID(), Name: name, CreatedAt: now}
+	if err := s.ids.CreateTenant(tenant); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "建租户失败：" + err.Error()})
+		return
+	}
 	if u == nil {
-		if len(req.AdminPassword) < 6 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "新管理员需设至少 6 位初始密码"})
-			return
-		}
 		ph, err := hashPassword(req.AdminPassword)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
