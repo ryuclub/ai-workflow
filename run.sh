@@ -19,7 +19,7 @@ for arg in "$@"; do
     --build-only) MODE="build" ;;
     --rebuild)    REBUILD=1 ;;
     -h|--help)    sed -n '2,10p' "$0"; exit 0 ;;
-    *) echo "未知参数：$arg（--dev / --build-only / --rebuild / --help）" >&2; exit 2 ;;
+    *) echo "未知参数：${arg}（--dev / --build-only / --rebuild / --help）" >&2; exit 2 ;;
   esac
 done
 
@@ -42,7 +42,7 @@ fi
 ENV_FILE=".claude/ai-workflow/.env"
 if [ ! -f "$ENV_FILE" ]; then
   cp "$ENV_FILE.example" "$ENV_FILE"
-  warn "已生成 $ENV_FILE，请补齐票源凭据（JIRA 或 Linear）后再起真实任务"
+  warn "已生成 ${ENV_FILE}，请补齐票源凭据（JIRA 或 Linear）后再起真实任务"
 fi
 
 # 幂等补一个非空的键值：$1=键名 $2=生成的值（仅在缺失或为空时写入）
@@ -54,7 +54,7 @@ ensure_secret() {
   else
     printf '\n%s=%s\n' "$key" "$val" >> "$ENV_FILE"
   fi
-  info "已生成并写入 $key（$ENV_FILE）"
+  info "已生成并写入 ${key}（${ENV_FILE}）"
 }
 
 if command -v openssl >/dev/null; then
@@ -90,7 +90,7 @@ fi
 [ "$MODE" = "build" ] && { info "前置完成（--build-only）"; exit 0; }
 
 # ── 3. 启动后端 ────────────────────────────────────────────
-info "登录：$WF_BOOTSTRAP_EMAIL / $WF_BOOTSTRAP_PASSWORD（首次启动创建；非本地务必用环境变量覆盖）"
+info "登录：${WF_BOOTSTRAP_EMAIL} / ${WF_BOOTSTRAP_PASSWORD}（首次启动创建；非本地务必用环境变量覆盖）"
 if [ "$MODE" = "dev" ]; then
   info "开发模式：后端已起，另开一终端跑  cd frontend && npm run dev  （前端 :5173，/api 代理到后端）"
 else
