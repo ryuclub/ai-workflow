@@ -82,6 +82,10 @@ func (s *Server) Router() *gin.Engine {
 	{
 		v1.POST("/auth/logout", s.logout)
 		v1.GET("/auth/me", s.me)
+		v1.POST("/auth/switch", s.switchTenant)
+		// 平台管理（平台超管）：开通/列出租户。
+		v1.GET("/platform/tenants", s.requirePlatformAdmin(), s.listTenants)
+		v1.POST("/platform/tenants", s.requirePlatformAdmin(), s.createTenant)
 		// Claude 登录态令牌：租户共享（管理员）+ 个人（本人）。
 		v1.GET("/settings/claude-token", s.requireAdminRole(), s.getTenantClaudeToken)
 		v1.PUT("/settings/claude-token", s.requireAdminRole(), s.putTenantClaudeToken)

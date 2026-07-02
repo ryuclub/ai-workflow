@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { login, setRole, setToken } from "../api";
+import { login, setPlatformAdmin, setRole, setToken } from "../api";
 
 // 邮箱+密码登录：校验通过后存会话 token 与角色，进入。
 export default function Login({ onOk }: { onOk: () => void }) {
@@ -16,6 +16,7 @@ export default function Login({ onOk }: { onOk: () => void }) {
       const r = await login(email.trim(), pw);
       setToken(r.token);
       setRole(r.role);
+      setPlatformAdmin(r.user.platform_admin);
       onOk();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "登录失败");
