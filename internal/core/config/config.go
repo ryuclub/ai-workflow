@@ -27,13 +27,16 @@ func (r Repo) IsEnabled() bool { return r.Enabled == nil || *r.Enabled }
 
 // Config 是控制面的运行配置。
 type Config struct {
-	Source    string            `json:"source"`     // 活跃票源：jira / linear（二选一）
-	Default   string            `json:"default"`    // 标题无信号时的默认仓
-	StatusMap map[string]string `json:"status_map"` // 任务态→票源流转名（空=不联动；写错会污染真实票，故默认关闭）
-	Repos     map[string]Repo   `json:"repos"`
-	Env       map[string]string `json:"-"` // 来自 .env / 租户密钥，承载凭据/端口/token 等
-	Root      string            `json:"-"` // 仓根目录（解析相对路径用）
-	TenantID  string            `json:"-"` // 非空=按租户解析出的配置；克隆/worktree/日志目录据此命名空间隔离
+	Source      string            `json:"source"`     // 活跃票源：jira / linear（二选一）
+	Default     string            `json:"default"`    // 标题无信号时的默认仓
+	StatusMap   map[string]string `json:"status_map"` // 任务态→票源流转名（空=不联动；写错会污染真实票，故默认关闭）
+	Repos       map[string]Repo   `json:"repos"`
+	AgentReview bool              `json:"agent_auto_review,omitempty"` // 塔台自动审核 Issue（无碍自动通过，有碍才要人审）
+	TaskModelC  string            `json:"task_model,omitempty"`        // 任务 claude 模型（B/C/D 段；空=CLI 默认）
+	AgentModelC string            `json:"agent_model,omitempty"`      // 塔台会话模型（空=CLI 默认）
+	Env         map[string]string `json:"-"`                           // 来自 .env / 租户密钥，承载凭据/端口/token 等
+	Root        string            `json:"-"`                           // 仓根目录（解析相对路径用）
+	TenantID    string            `json:"-"`                           // 非空=按租户解析出的配置；克隆/worktree/日志目录据此命名空间隔离
 }
 
 // tenantSub 在 TenantID 非空时把路径下沉到 <base>/<tenantID>，实现按租户隔离。
@@ -290,3 +293,61 @@ func (c *Config) EnvPath() string {
 	return filepath.Join(c.Root, ".claude", "ai-workflow", ".env")
 }
 func (c *Config) ConfigPath() string { return filepath.Join(c.Root, "config.json") }
+
+// --- M7 调度 Agent ---
+
+// AgentEnabled 是调度 Agent 总开关（默认开）。
+func (c *Config) AgentEnabled() bool { return c.get("AGENT_ENABLED", "true") != "false" }
+
+// AgentModel 是塔台会话模型：租户配置 > AGENT_MODEL 环境 > 空（CLI 默认）。
+func (c *Config) AgentModel() string {
+	if c.AgentModelC != "" {
+		return c.AgentModelC
+	}
+	return c.get("AGENT_MODEL", "")
+}
+
+// TaskModel 是任务 claude（B/C/D 段）模型：租户配置 > TASK_MODEL 环境 > 空（CLI 默认）。
+func (c *Config) TaskModel() string {
+	if c.TaskModelC != "" {
+		return c.TaskModelC
+	}
+	return c.get("TASK_MODEL", "")
+}
+
+// AgentDir 是 Agent 会话工作目录（空目录，无 CLAUDE.md 干扰；按租户隔离）。
+func (c *Config) AgentDir() string { return c.tenantSub(c.get("AGENT_DIR", "/tmp/wf-agent")) }
+
+// AgentIdleMin 是 Agent 会话空闲回收分钟数（默认 30；会话 id 已持久化，回收后可 resume）。
+func (c *Config) AgentIdleMin() int {
+	if n, err := strconv.Atoi(c.get("AGENT_IDLE_MIN", "30")); err == nil && n > 0 {
+		return n
+	}
+	return 30
+}
+
+// AgentReviewRemindH 是人审滞留提醒阈值（小时，默认 24；0=关闭提醒）。
+func (c *Config) AgentReviewRemindH() int {
+	if n, err := strconv.Atoi(c.get("AGENT_REVIEW_REMIND_H", "24")); err == nil && n >= 0 {
+		return n
+	}
+	return 24
+}
+
+// AgentAutoReview 返回本租户是否启用塔台自动审核 Issue（受 Agent 总开关约束）。
+// 启用后：Issue 产出 → 塔台先审，无阻碍且选项明确时自动通过继续实装；
+// 有真阻碍/选项不明确才上报人工（escalate_review → Slack）。
+func (c *Config) AgentAutoReview() bool { return c.AgentReview && c.AgentEnabled() }
+
+// AgentAutoActions 是写工具自动执行白名单（逗号分隔）。人审闸口类工具（approve_issue/approve_pr）
+// 属硬性确认制，配置在此也不会放行——例外：启用塔台自动审核后 approve_issue/update_issue 对塔台直通。
+func (c *Config) AgentAutoActions() []string {
+	raw := c.get("AGENT_AUTO_ACTIONS", "cancel_task,restart_task,request_revise")
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}

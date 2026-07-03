@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listTasks } from "../api";
+import { listTasks, subscribeTenantEvents } from "../api";
 import type { Task } from "../types";
 
 const STATE_LABEL: Record<string, string> = {
@@ -31,7 +31,7 @@ const STATE_CLASS: Record<string, string> = {
   skipped: "s-skip",
 };
 
-// 任务列表：轮询刷新（与 SSE 互补，保证列表整体最新）。
+// 任务列表：事件驱动刷新（租户级 SSE 有事件才重拉；低频兜底轮询防 SSE 断流）。
 export default function TaskList({
   selectedId,
   onSelect,
@@ -45,12 +45,21 @@ export default function TaskList({
 
   useEffect(() => {
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const load = () => listTasks().then((d) => alive && setTasks(d.tasks || [])).catch(() => {});
+    // 事件可能连发（节点级日志），合并 300ms 内的刷新。
+    const loadSoon = () => {
+      if (timer) return;
+      timer = setTimeout(() => { timer = null; load(); }, 300);
+    };
     load();
-    const t = setInterval(load, 4000);
+    const unsub = subscribeTenantEvents(loadSoon);
+    const fallback = setInterval(load, 60000);
     return () => {
       alive = false;
-      clearInterval(t);
+      unsub();
+      clearInterval(fallback);
+      if (timer) clearTimeout(timer);
     };
   }, [refreshKey]);
 

@@ -1,4 +1,4 @@
-// Command server 是 AI 工作流流水线的控制面：Gin HTTP 服务 + 任务编排。
+// Command server 是 「PR 工厂」（工单 → PR 自动交付）的控制面：Gin HTTP 服务 + 任务编排。
 //
 // 需跑在能访问 claude 登录态的图形登录会话内（headless claude -p 的 OAuth 在 keychain）。
 package main
@@ -12,6 +12,7 @@ import (
 
 	"github.com/ryuclub/ai-workflow/internal/api"
 	"github.com/ryuclub/ai-workflow/internal/app"
+	"github.com/ryuclub/ai-workflow/internal/core/agent"
 	"github.com/ryuclub/ai-workflow/internal/core/events"
 	"github.com/ryuclub/ai-workflow/internal/core/orchestrator"
 	"github.com/ryuclub/ai-workflow/internal/core/runner"
@@ -56,13 +57,20 @@ func main() {
 		log.Fatalf("初始化管理员失败: %v", err)
 	}
 
-	bus := events.NewBus(st, events.NewSlackSink(cfg.SlackWebhook()))
-	orch := orchestrator.New(rt, st, bus, runner.NewClaude(rt))
+	bus := events.NewBus(st, events.NewSlackSink(cfg.SlackWebhook(), st,
+		func(tenantID string) bool { return rt.Config(tenantID).AgentAutoReview() }))
+	live := runner.NewLive() // 任务输出直播器（塔台实时控制台）
+	orch := orchestrator.New(rt, st, bus, runner.NewClaude(rt, live))
 	orch.StartPoller(context.Background()) // 后台轮询 PR 审查决议，驱动修订循环
 
-	srv := api.NewServer(rt, st, st, vault, bus, orch)
+	// M7 调度 Agent：每租户常驻 claude 会话 + 事件唤醒 watcher。
+	mgr := agent.NewManager(st, bus, rt, orch)
+	mgr.StartWatcher(context.Background())
+	defer mgr.Shutdown()
+
+	srv := api.NewServer(rt, st, st, vault, bus, orch, mgr, live)
 	addr := cfg.Host() + ":" + strconv.Itoa(cfg.Port())
-	log.Printf("AI 工作流控制面启动 → http://%s  默认源=%s  多租户=on  模板登记仓=%v",
+	log.Printf("PR 工厂控制面启动 → http://%s  默认源=%s  多租户=on  模板登记仓=%v",
 		addr, cfg.ActiveSource(), keys(cfg.Repos))
 	if cfg.Host() == "0.0.0.0" {
 		if vault == nil {

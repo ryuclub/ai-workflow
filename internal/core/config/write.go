@@ -49,10 +49,13 @@ func (c *Config) SetEnv(kv map[string]string) error {
 
 // configFile 是 config.json 的可序列化形态。
 type configFile struct {
-	Source    string            `json:"source,omitempty"`
-	Default   string            `json:"default,omitempty"`
-	StatusMap map[string]string `json:"status_map,omitempty"`
-	Repos     map[string]Repo   `json:"repos"`
+	Source      string            `json:"source,omitempty"`
+	Default     string            `json:"default,omitempty"`
+	StatusMap   map[string]string `json:"status_map,omitempty"`
+	Repos       map[string]Repo   `json:"repos"`
+	AgentReview bool              `json:"agent_auto_review,omitempty"`
+	TaskModel   string            `json:"task_model,omitempty"`
+	AgentModel  string            `json:"agent_model,omitempty"`
 }
 
 // SaveConfigJSON 把 source/default/status_map/repos 持久化回 config.json。
@@ -62,7 +65,7 @@ func (c *Config) SaveConfigJSON() error {
 		r.Name = "" // name 由 map key 承载，不重复写
 		repos[name] = r
 	}
-	cf := configFile{Source: c.Source, Default: c.Default, StatusMap: c.StatusMap, Repos: repos}
+	cf := configFile{Source: c.Source, Default: c.Default, StatusMap: c.StatusMap, Repos: repos, AgentReview: c.AgentReview, TaskModel: c.TaskModelC, AgentModel: c.AgentModelC}
 	b, err := json.MarshalIndent(cf, "", "  ")
 	if err != nil {
 		return err

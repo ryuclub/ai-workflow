@@ -60,6 +60,7 @@ type Task struct {
 	PRNum        int       `json:"pr_num,omitempty"`        // PR 编号（进入 PR 审查闸口 / 修订循环时用）
 	ReviewRound  int       `json:"review_round,omitempty"`  // 已进行的修订轮次（PR 审查循环计数）
 	ReviewCursor string    `json:"review_cursor,omitempty"` // 上次已处理的 review 提交时间（RFC3339，幂等游标）
+	RunGen       int       `json:"run_gen,omitempty"`       // 运行代数：每启动一段 claude 递增；过期代数的回传事件被丢弃（防孤儿进程串写）
 	IdemKey      string    `json:"-"`
 	Error        string    `json:"error,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -77,13 +78,14 @@ type NodeRun struct {
 
 // Event 是一条进度/日志事件（对外契约的一部分）。
 type Event struct {
-	ID      int64     `json:"id"`
-	TaskID  string    `json:"task_id"`
-	NodeID  string    `json:"node_id,omitempty"`
-	Type    string    `json:"type"`  // task.created / node.started / node.completed / ...
-	Level   string    `json:"level"` // info / warn / error
-	Message string    `json:"message"`
-	TS      time.Time `json:"ts"`
+	ID       int64     `json:"id"`
+	TaskID   string    `json:"task_id"`
+	TenantID string    `json:"tenant_id,omitempty"` // 归属租户（租户级全局订阅用）
+	NodeID   string    `json:"node_id,omitempty"`
+	Type     string    `json:"type"`  // task.created / node.started / node.completed / ...
+	Level    string    `json:"level"` // info / warn / error
+	Message  string    `json:"message"`
+	TS       time.Time `json:"ts"`
 }
 
 // Store 是持久化接口。所有方法应并发安全。
@@ -93,6 +95,7 @@ type Store interface {
 	ListTasks() ([]*Task, error)
 	ListTasksByTenant(tenantID string) ([]*Task, error)
 	UpdateTask(t *Task) error
+	DeleteTask(id string) error // 连带删除 node_runs / events（仅终态；状态校验在上层）
 	FindByIdem(idem string) (*Task, error)
 	FindBySource(source, sourceID string) (*Task, error) // 最近一个，供列表去重标记
 

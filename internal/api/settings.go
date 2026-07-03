@@ -23,6 +23,9 @@ type settingsResp struct {
 	StatusMap      map[string]string `json:"status_map"`
 	MaxConcurrent  int               `json:"max_concurrent"`
 	TaskTimeoutMin int               `json:"task_timeout_min"`
+	AgentReview    bool              `json:"agent_auto_review"` // 塔台自动审核 Issue
+	TaskModel      string            `json:"task_model"`        // 任务 claude 模型（空=CLI 默认）
+	AgentModel     string            `json:"agent_model"`       // 塔台模型（空=CLI 默认）
 }
 
 // settingsReq：空字符串=不改（避免清空密钥）；StatusMap 非 nil=整体替换。
@@ -36,8 +39,11 @@ type settingsReq struct {
 	LinearAPIKey   string            `json:"linear_api_key"`
 	GithubToken    string            `json:"github_token"`
 	StatusMap      map[string]string `json:"status_map"`
-	MaxConcurrent  int               `json:"max_concurrent"`   // 0=不改
-	TaskTimeoutMin int               `json:"task_timeout_min"` // 0=不改
+	MaxConcurrent  int               `json:"max_concurrent"`    // 0=不改
+	TaskTimeoutMin int               `json:"task_timeout_min"`  // 0=不改
+	AgentReview    *bool             `json:"agent_auto_review"` // nil=不改
+	TaskModel      *string           `json:"task_model"`        // nil=不改；""=清空回默认
+	AgentModel     *string           `json:"agent_model"`       // nil=不改；""=清空回默认
 }
 
 // saveTenantConfig 把该租户的非机密配置（source/default/status_map/repos）落库。
@@ -93,6 +99,9 @@ func (s *Server) getSettings(c *gin.Context) {
 		StatusMap:      cfg.StatusMap,
 		MaxConcurrent:  cfg.MaxConcurrent(),
 		TaskTimeoutMin: cfg.TaskTimeoutMin(),
+		AgentReview:    cfg.AgentAutoReview(),
+		TaskModel:      cfg.TaskModel(),
+		AgentModel:     cfg.AgentModel(),
 	})
 }
 
@@ -133,6 +142,17 @@ func (s *Server) putSettings(c *gin.Context) {
 	if req.StatusMap != nil {
 		cfg.StatusMap = req.StatusMap
 	}
+	if req.AgentReview != nil {
+		cfg.AgentReview = *req.AgentReview
+	}
+	agentModelChanged := false
+	if req.TaskModel != nil {
+		cfg.TaskModelC = strings.TrimSpace(*req.TaskModel)
+	}
+	if req.AgentModel != nil && cfg.AgentModelC != strings.TrimSpace(*req.AgentModel) {
+		cfg.AgentModelC = strings.TrimSpace(*req.AgentModel)
+		agentModelChanged = true
+	}
 	if err := s.saveTenantConfig(c, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "写租户配置失败：" + err.Error()})
 		return
@@ -140,6 +160,9 @@ func (s *Server) putSettings(c *gin.Context) {
 	if err := s.deps.Reload(c.GetString(ctxTenantID)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "重载失败：" + err.Error()})
 		return
+	}
+	if agentModelChanged {
+		s.mgr.Recycle(c.GetString(ctxTenantID)) // 塔台会话按新模型重启（resume 保上下文）
 	}
 	s.getSettings(c)
 }

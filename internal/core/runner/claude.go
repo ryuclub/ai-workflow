@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,11 +28,12 @@ type Env interface {
 
 // Claude 在目标仓的临时 worktree 内跑 claude -p（真实实现）。
 type Claude struct {
-	env Env
+	env  Env
+	live *Live // 输出直播器（可为 nil：仅落盘不直播）
 }
 
-// NewClaude 构造真实 runner。
-func NewClaude(env Env) *Claude { return &Claude{env: env} }
+// NewClaude 构造真实 runner。live 可为 nil。
+func NewClaude(env Env, live *Live) *Claude { return &Claude{env: env, live: live} }
 
 // RunB 跑「票 → GitHub Issue」。命令按活跃源选择对应 skill。
 func (c *Claude) RunB(ctx context.Context, t *store.Task) error {
@@ -111,13 +113,21 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TaskTimeoutMin())*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, cfg.ClaudeBin(), "-p", prompt, "--dangerously-skip-permissions")
+	// stream-json + 翻译器：纯文本模式只在结束时打印最终结果，运行期零输出——
+	// 直播/日志毫无进度可看；stream-json 逐事件输出，由 renderWriter 实时转可读行。
+	cmdArgs := []string{"-p", prompt, "--dangerously-skip-permissions",
+		"--output-format", "stream-json", "--verbose"}
+	if m := cfg.TaskModel(); m != "" {
+		cmdArgs = append(cmdArgs, "--model", m)
+	}
+	cmd := exec.CommandContext(runCtx, cfg.ClaudeBin(), cmdArgs...)
 	cmd.Dir = wt
 	// 注入任务上下文：skill 经 emit-event.sh 用这些把阶段事件 POST 回控制面。
 	env := append(os.Environ(),
 		"WF_TASK_ID="+t.ID,
 		"WF_EVENT_URL="+cfg.EventURLBase()+"/internal/tasks/"+t.ID+"/event",
 		"WF_INTERNAL_TOKEN="+cfg.InternalToken(),
+		"WF_RUN_GEN="+strconv.Itoa(t.RunGen), // 运行代数：过期代数的回传被丢弃（防孤儿进程串写）
 	)
 	if repo.Base != "" {
 		env = append(env, "WF_PR_BASE="+repo.Base) // 每仓 PR base 覆盖（issue-to-pr 优先取）
@@ -139,9 +149,17 @@ func (c *Claude) run(ctx context.Context, t *store.Task, prompt, label string) e
 	}
 	cmd.Env = env
 	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	sink := io.Writer(&buf)
+	if c.live != nil { // tee：落盘缓冲 + 塔台实时直播
+		lw := c.live.Start(t.ID, t.TenantID, label)
+		defer c.live.End(t.ID)
+		sink = io.MultiWriter(&buf, lw)
+	}
+	rw := newRenderWriter(sink) // stream-json → 可读行
+	cmd.Stdout = rw
+	cmd.Stderr = rw
 	err = cmd.Run()
+	rw.Flush()
 	out := buf.String()
 	writeLog(cfg.LogsDir(), t.ID, label, prompt, out) // 全量输出落盘，便于排查
 

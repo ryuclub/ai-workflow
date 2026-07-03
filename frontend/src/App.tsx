@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AuthError, clearToken, getAuthStatus, getMe, getPipeline, getSource, getToken, logout, type Membership, setPlatformAdmin, setRole, setToken, switchTenant } from "./api";
+import ChatPanel from "./components/ChatPanel";
+import DialogHost from "./components/Dialog";
 import HealthPill from "./components/HealthPill";
 import Login from "./components/Login";
 import Settings from "./components/Settings";
@@ -10,6 +12,8 @@ import type { Pipeline } from "./types";
 
 const W_KEY = "wf.sidebar.w";
 const C_KEY = "wf.sidebar.collapsed";
+const CHAT_KEY = "wf.chat.open";
+const CHAT_W_KEY = "wf.chat.w";
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null); // null=校验中
@@ -25,7 +29,13 @@ export default function App() {
 
   const [width, setWidth] = useState(() => Number(localStorage.getItem(W_KEY)) || 360);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(C_KEY) === "1");
+  const [showChat, setShowChat] = useState(() => localStorage.getItem(CHAT_KEY) === "1");
+  const [chatWidth, setChatWidth] = useState(() => Number(localStorage.getItem(CHAT_W_KEY)) || 400);
+  const [chatUnread, setChatUnread] = useState(false);
+  const showChatRef = useRef(showChat);
+  showChatRef.current = showChat;
   const dragging = useRef(false);
+  const draggingChat = useRef(false);
 
   // 启动鉴权校验：不需要鉴权→直接进；需要且有 token→验证；否则要登录。
   useEffect(() => {
@@ -55,14 +65,28 @@ export default function App() {
 
   useEffect(() => localStorage.setItem(W_KEY, String(width)), [width]);
   useEffect(() => localStorage.setItem(C_KEY, collapsed ? "1" : "0"), [collapsed]);
+  useEffect(() => localStorage.setItem(CHAT_KEY, showChat ? "1" : "0"), [showChat]);
+  useEffect(() => localStorage.setItem(CHAT_W_KEY, String(chatWidth)), [chatWidth]);
+
+  // 任意组件可经全局事件弹开塔台窗（如 PR 审查闸口的「塔台审查」快捷按钮）。
+  useEffect(() => {
+    const open = () => {
+      setShowChat(true);
+      setChatUnread(false);
+    };
+    window.addEventListener("wf-open-chat", open);
+    return () => window.removeEventListener("wf-open-chat", open);
+  }, []);
 
   useEffect(() => {
     const move = (e: MouseEvent) => {
       if (dragging.current) setWidth(Math.min(760, Math.max(220, e.clientX)));
+      if (draggingChat.current) setChatWidth(Math.min(760, Math.max(300, window.innerWidth - e.clientX)));
     };
     const up = () => {
-      if (dragging.current) {
+      if (dragging.current || draggingChat.current) {
         dragging.current = false;
+        draggingChat.current = false;
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       }
@@ -77,6 +101,11 @@ export default function App() {
 
   const startDrag = () => {
     dragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+  const startDragChat = () => {
+    draggingChat.current = true;
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   };
@@ -99,7 +128,7 @@ export default function App() {
         <button className="mini" title={collapsed ? "展开侧栏" : "收起侧栏"} onClick={() => setCollapsed((c) => !c)}>
           {collapsed ? "›" : "‹"}
         </button>
-        <span className="logo">AI 工作流流水线</span>
+        <span className="logo">PR 工厂</span>
         {source && <span className="src-pill">票源：{source}</span>}
         <span style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           {tenants.length > 1 && (
@@ -124,6 +153,12 @@ export default function App() {
             </select>
           )}
           <HealthPill />
+          <button
+            className={"mini chat-toggle" + (showChat ? " on-btn" : "")}
+            onClick={() => { setShowChat((v) => !v); setChatUnread(false); }}
+          >
+            📡 塔台{chatUnread && !showChat ? <span className="chat-dot" /> : null}
+          </button>
           <button className={"mini" + (showSettings ? " on-btn" : "")} onClick={() => setShowSettings((v) => !v)}>
             ⚙ 设置
           </button>
@@ -150,12 +185,18 @@ export default function App() {
           {showSettings ? (
             <Settings onReposChanged={() => setReposVersion((v) => v + 1)} />
           ) : selected && pipeline ? (
-            <TaskDetail taskId={selected} pipeline={pipeline} />
+            <TaskDetail taskId={selected} pipeline={pipeline} onDeleted={() => setSelected(null)} />
           ) : (
             <div className="empty">选择一张候选票开始任务，或从「任务」打开一个流水线。</div>
           )}
         </main>
+        {/* 常驻挂载：SSE 保持连接，关窗时仅隐藏（新消息点亮未读角标） */}
+        {showChat && <div className="resizer" onMouseDown={startDragChat} />}
+        <aside className={"chatwrap" + (showChat ? "" : " hidden")} style={{ width: showChat ? chatWidth : 0 }}>
+          <ChatPanel onNewMessage={() => { if (!showChatRef.current) setChatUnread(true); }} />
+        </aside>
       </div>
+      <DialogHost />
     </div>
   );
 }

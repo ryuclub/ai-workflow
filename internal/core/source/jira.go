@@ -102,6 +102,10 @@ func (j *Jira) Transition(ctx context.Context, id, name string) error {
 	return j.client.Transition(ctx, id, name)
 }
 
+func (j *Jira) Transitions(ctx context.Context, id string) ([]string, error) {
+	return j.client.Transitions(ctx, id)
+}
+
 // flattenADF 把 JIRA 的 ADF（Atlassian Document Format）JSON 递归抽取为可读纯文本。
 // 仅用于 Dashboard 预览；权威的 ADF 解析仍由 worktree 内的 jira_api.py/skill 负责。
 func flattenADF(raw json.RawMessage) string {

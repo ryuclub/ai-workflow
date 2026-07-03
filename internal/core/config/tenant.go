@@ -41,6 +41,9 @@ func FromTenant(base *Config, tenantID, tenantJSON string, creds map[string]stri
 		}
 		c.Source = cf.Source
 		c.Default = cf.Default
+		c.AgentReview = cf.AgentReview
+		c.TaskModelC = cf.TaskModel
+		c.AgentModelC = cf.AgentModel
 		if cf.StatusMap != nil {
 			c.StatusMap = cf.StatusMap
 		}
@@ -51,6 +54,9 @@ func FromTenant(base *Config, tenantID, tenantJSON string, creds map[string]stri
 	} else {
 		c.Source = base.Source
 		c.Default = base.Default
+		c.AgentReview = base.AgentReview
+		c.TaskModelC = base.TaskModelC
+		c.AgentModelC = base.AgentModelC
 		for k, v := range base.StatusMap {
 			c.StatusMap[k] = v
 		}
@@ -68,7 +74,7 @@ func (c *Config) ToTenantJSON() (string, error) {
 		r.Name = "" // name 由 map key 承载
 		repos[name] = r
 	}
-	cf := configFile{Source: c.Source, Default: c.Default, StatusMap: c.StatusMap, Repos: repos}
+	cf := configFile{Source: c.Source, Default: c.Default, StatusMap: c.StatusMap, Repos: repos, AgentReview: c.AgentReview, TaskModel: c.TaskModelC, AgentModel: c.AgentModelC}
 	b, err := json.Marshal(cf)
 	return string(b), err
 }

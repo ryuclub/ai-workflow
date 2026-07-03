@@ -60,9 +60,25 @@ bash .claude/ai-workflow/emit-event.sh <phase> <status> "<消息>"
    ```
    - 校验含 `已审核` 标签；否则中止并报告（非本命令处理对象）。
 2. 从标题 `[PROJ-XXXX]` 提取工单号。
-3. **幂等检查**（防 /loop 重复触发）：
-   - 已存在 `*/PROJ-XXXX-*` 分支或关联 PR → 不重复开工，报告现状后退出。
-   - Issue 已带 `已实装` → 跳过。
+3. **幂等/对齐检查**：
+   - 已存在 `*/PROJ-XXXX-*` 分支或关联的**开放 PR** → 进入**对齐模式（Phase 0.5）**，不重新开工也不直接退出。
+   - 关联 PR 均已合并/关闭且 Issue 已带 `已实装` → 无事可做，报告后退出。
+
+### Phase 0.5：对齐模式（重跑 / Issue 更新后）
+
+> 场景：任务重跑后 Issue 可能被重建、人工或塔台的审核决策（方案分歧点勾选、验收条件）可能已变化。
+> 此时**不能**因为「PR 已存在、实装已完成」就跳过——必须以**最新 Issue 为准**核对既有 PR 并修正。
+
+1. `emit-event.sh C.blueprint start "对齐模式：按最新 Issue 核对既有 PR"`
+2. checkout 既有分支并同步：`git fetch origin && git checkout <既有分支> && git merge origin/<BASE>`（冲突则报告遇阻）。
+3. **逐条核对**最新 Issue（正文、勾选的方案分歧点、验收条件）与 PR 现有实现的差异：
+   - 方案分歧点勾选变化 → 对应实现改动；
+   - 需求/验收条件增删 → 对应补齐/回退；
+   - 完全一致 → 报告「PR 与最新 Issue 一致，无需变更」，`emit-event.sh C.pr ok`，退出（任务回到 PR 审查）。
+4. 有差异 → 按 Phase 3/4 的标准修正实现并跑硬关卡（构建/测试全绿）。
+5. push 到既有分支（更新既有 PR，**不新开 PR**）；更新 PR 描述说明「按最新 Issue（第 N 版）对齐」；
+   `emit-event.sh C.pr ok "PR 已按最新 Issue 对齐"`（带 `WF_PR_URL`）。
+6. 之后跳过 Phase 1（分支已在），按需执行 Phase 5 的回写收尾。
 
 ### Phase 1：建分支
 
@@ -134,4 +150,5 @@ Slack 播报 `✅ [C] Issue #N → PR <url>，已标『已实装』`，并报告
 
 ## 与 /loop 协同
 
-`/loop` 扫 `已审核` Issue → 对每个调用 `/issue-to-pr <N>`。Phase 0 的幂等检查确保重复触发不重复开工。
+`/loop` 扫 `已审核` Issue → 对每个调用 `/issue-to-pr <N>`。Phase 0 的幂等/对齐检查确保重复触发不重复开工：
+已有 PR 时走对齐模式——与最新 Issue 一致则空跑退出，有差异则修正既有 PR（不重开）。

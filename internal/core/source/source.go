@@ -31,4 +31,7 @@ type Provider interface {
 	DefaultQuery() string
 	// Transition 把工单流转到指定状态（name 为源的流转/状态名）。不支持则可返回 nil。
 	Transition(ctx context.Context, id, name string) error
+	// Transitions 返回该票当前可用的流转目标名。JIRA=工作流当前合法 transitions；
+	// Linear=团队工作流状态集（任意可达）。
+	Transitions(ctx context.Context, id string) ([]string, error)
 }

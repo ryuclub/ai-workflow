@@ -152,8 +152,9 @@ button.toggle.off { background: #f1f3f4; border-color: #d0d3d9; color: #9aa0a6; 
 .health { position: relative; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .health-pop { position: absolute; right: 0; top: 30px; z-index: 50; background: #fff; color: #1f2329; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px; width: 300px; box-shadow: 0 6px 24px #0002; }
-.health-row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 0; }
-.health-row .muted2 { margin-left: auto; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health-row { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; padding: 3px 0; }
+/* detail 允许换行完整展示（悬停另有 title 提示），不再省略号截断 */
+.health-row .health-detail { margin-left: auto; max-width: 190px; text-align: right; overflow-wrap: break-word; word-break: break-all; }
 
 /* claude 输出 */
 .logdump { background: #1f2329; color: #d6d8db; padding: 8px; border-radius: 6px; font-size: 11px; line-height: 1.4; overflow: auto; max-height: 320px; white-space: pre-wrap; word-break: break-all; }
@@ -192,3 +193,71 @@ button.toggle.off { background: #f1f3f4; border-color: #d0d3d9; color: #9aa0a6; 
 .members { width: 100%; border-collapse: collapse; margin: 8px 0; }
 .members th, .members td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }
 .add-member { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+
+/* —— 塔台（调度 Agent）聊天窗 —— */
+/* 宽度自适应要点：overflow hidden 防内容撑爆面板；各级 flex 子项显式 min-width/min-height:0
+   允许收缩；宽内容（markdown 表格/长代码）在气泡内横向滚动而不是把整窗撑宽。 */
+.chatwrap { width: 400px; flex-shrink: 0; min-width: 0; overflow: hidden; border-left: 1px solid #e0e0e0; background: #fff; display: flex; min-height: 0; }
+.chatwrap.hidden { display: none; }
+.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.chat-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-weight: 600; font-size: 13px; color: #5f6368; border-bottom: 1px solid #f0f0f0; flex-shrink: 0; flex-wrap: wrap; }
+.chat-body { flex: 1; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.chat-msg { display: flex; flex-direction: column; gap: 2px; max-width: 100%; min-width: 0; }
+.chat-msg.user { align-items: flex-end; }
+.chat-meta { font-size: 11px; color: #9aa0a6; }
+.chat-bubble { border-radius: 10px; padding: 6px 10px; font-size: 13px; overflow-wrap: break-word; min-width: 0; max-width: 100%; overflow-x: auto; }
+.chat-bubble table { max-width: 100%; }
+.chat-msg.assistant .chat-bubble { background: #f5f6f8; }
+.chat-msg.user .chat-bubble { background: #fff5e0; }
+.chat-msg.system .chat-bubble { background: #e8f0fe; border: 1px solid #9db9e8; border-left: 3px solid #1f6fd6; font-size: 12px; color: #1a3a63; }
+.chat-bubble p:first-child { margin-top: 0; }
+.chat-bubble p:last-child { margin-bottom: 0; }
+.chat-action { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e0e0e0; flex-wrap: wrap; }
+.chat-action-tag { font-size: 12px; color: #5f6368; }
+.chat-input { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #f0f0f0; align-items: flex-end; flex-shrink: 0; }
+.chat-input textarea { min-width: 0; }
+.chat-input button { flex-shrink: 0; }
+.chat-filter { max-width: 150px; min-width: 60px; flex-shrink: 1; font-size: 12px; padding: 2px 4px; border: 1px solid #d0d3d9; border-radius: 6px; }
+/* 任务详情：重跑菜单（TicketStatus 流转菜单复用） */
+.restart-wrap { position: relative; display: inline-flex; }
+.restart-menu { position: absolute; right: 0; top: 28px; z-index: 40; display: flex; flex-direction: column; gap: 4px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 6px; box-shadow: 0 6px 24px #0002; white-space: nowrap; max-height: 240px; overflow: auto; }
+/* 恢复/重跑菜单：每项 = 标题 + 一句适用说明，按现状只列有意义的选项 */
+.recover-menu { min-width: 260px; }
+.recover-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; border: none; background: none; padding: 7px 8px; border-radius: 6px; white-space: normal; }
+.recover-item:hover { background: #fff5e0; }
+.recover-title { font-size: 13px; font-weight: 600; color: #1f2329; display: flex; align-items: center; gap: 6px; }
+.recover-rec { font-size: 10px; font-weight: 600; color: #1e9e54; background: #e6f7ec; border-radius: 8px; padding: 0 6px; }
+.recover-desc { font-size: 11px; color: #9aa0a6; }
+
+/* 候选票：可点开的状态胶囊 */
+.ticket-status { position: relative; }
+.ticket-status .restart-menu { left: 0; right: auto; top: 22px; }
+.status-pill { border: 1px dashed #d0d3d9; background: #f7f8fa; border-radius: 10px; padding: 1px 8px; font-size: 11px; color: #5f6368; cursor: pointer; }
+.status-pill:hover { border-color: #f5a623; color: #1f2329; }
+.chat-input textarea { flex: 1; resize: none; padding: 6px 8px; border: 1px solid #d0d3d9; border-radius: 6px; font-size: 13px; font-family: inherit; }
+/* 全局确认/提示弹窗 */
+.dlg-mask { position: fixed; inset: 0; z-index: 100; background: #0006; display: flex; align-items: center; justify-content: center; }
+.dlg { background: #fff; border-radius: 10px; padding: 20px 22px; width: 360px; max-width: 90vw; box-shadow: 0 12px 40px #0004; }
+.dlg-msg { font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.dlg-actions .danger { background: #e5484d; border-color: #e5484d; color: #fff; }
+
+.chat-toggle { position: relative; }
+.chat-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #e5484d; }
+/* 任务级事件时间线行：比普通聊天更醒目（底色条 + 左色边 + 深色文字） */
+.chat-event { font-size: 12px; color: #2d3748; background: #eef2f7; border-left: 3px solid #7a869a; border-radius: 4px; padding: 5px 8px; }
+.chat-event.ev-warn { background: #fff3d6; border-left-color: #f5a623; color: #7a5200; }
+.chat-event.ev-error { background: #fdecec; border-left-color: #e5484d; color: #a2262c; font-weight: 600; }
+/* 运行中任务的实时输出直播 */
+.chat-live { border-bottom: 1px solid #f0f0f0; max-height: 45%; overflow: auto; flex-shrink: 0; min-width: 0; }
+.live-task { border-bottom: 1px solid #f7f7f7; }
+.live-task-head { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+.live-task-head:hover { background: #fafafa; }
+.live-task-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5f6368; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #f5a623; animation: livepulse 1.2s ease-in-out infinite; flex-shrink: 0; }
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.live-console { margin: 0 12px 8px; max-height: 240px; }
+@media (max-width: 720px) {
+  /* 窄屏：聊天窗变全宽覆盖抽屉 */
+  .chatwrap { position: absolute; right: 0; z-index: 31; height: 100%; width: 92vw !important; max-width: 400px; box-shadow: -2px 0 12px #0003; }
+}

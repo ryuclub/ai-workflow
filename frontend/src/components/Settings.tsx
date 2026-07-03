@@ -10,6 +10,7 @@ import {
   upsertRepo,
 } from "../api";
 import type { Repo, SettingsView } from "../types";
+import { confirmDialog } from "./Dialog";
 import { isAdmin, isPlatformAdmin } from "../api";
 import ClaudeToken from "./ClaudeToken";
 import Members from "./Members";
@@ -48,6 +49,9 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
     ["done", "完成"], ["adjudication", "待裁决"], ["skipped", "已跳过"],
   ];
   const [smap, setSmap] = useState<Record<string, string>>({});
+  const [agentReview, setAgentReview] = useState(false);
+  const [taskModel, setTaskModel] = useState("");
+  const [agentModel, setAgentModel] = useState("");
   const [importOwner, setImportOwner] = useState("");
   const [confirmImport, setConfirmImport] = useState(false); // 内联确认，替代原生 confirm
 
@@ -65,6 +69,9 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
         task_timeout_min: String(v.task_timeout_min || ""),
       });
       setSmap(v.status_map || {});
+      setAgentReview(!!v.agent_auto_review);
+      setTaskModel(v.task_model || "");
+      setAgentModel(v.agent_model || "");
     }).catch((e) => setMsg("读取设置失败：" + e.message));
     loadRepos();
   };
@@ -96,6 +103,9 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
       if (f.max_concurrent) p2.max_concurrent = Number(f.max_concurrent);
       if (f.task_timeout_min) p2.task_timeout_min = Number(f.task_timeout_min);
       p2.status_map = Object.fromEntries(Object.entries(smap).filter(([, val]) => val));
+      p2.agent_auto_review = agentReview;
+      p2.task_model = taskModel;
+      p2.agent_model = agentModel;
       const v = await putSettings(p2);
       setS(v);
       setSmap(v.status_map || {});
@@ -152,7 +162,7 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
     }
   };
   const delRepo = async (name: string) => {
-    if (!confirm(`删除登记仓 ${name}？`)) return;
+    if (!(await confirmDialog(`删除登记仓 ${name}？`, { danger: true, confirmText: "删除" }))) return;
     await deleteRepoApi(name).catch(() => {});
     afterReposChange();
   };
@@ -241,12 +251,48 @@ export default function Settings({ onReposChanged }: { onReposChanged?: () => vo
         <h3>运行</h3>
         <label>最大并发任务数<input value={f.max_concurrent ?? ""} onChange={(e) => set("max_concurrent", e.target.value)} placeholder="3" /></label>
         <label>单任务超时(分钟)<input value={f.task_timeout_min ?? ""} onChange={(e) => set("task_timeout_min", e.target.value)} placeholder="60" /></label>
+        <label>任务模型（B/C/D 段实装）
+          <input
+            list="model-options"
+            value={taskModel}
+            placeholder="默认（跟随 claude CLI）"
+            onChange={(e) => setTaskModel(e.target.value)}
+          />
+        </label>
+        <label>塔台模型（调度/审查/对话）
+          <input
+            list="model-options"
+            value={agentModel}
+            placeholder="默认（跟随 claude CLI）"
+            onChange={(e) => setAgentModel(e.target.value)}
+          />
+        </label>
+        {/* CLI 无列模型命令、/v1/models 需 API Key（我们走订阅 OAuth）——用官方档位别名 +
+            自由输入完整模型 ID 兜底：别名由 CLI 解析为该档位最新型号，新模型无需改代码。 */}
+        <datalist id="model-options">
+          <option value="fable">最强（复杂实装）</option>
+          <option value="opus">强（推荐日常实装）</option>
+          <option value="sonnet">均衡（推荐塔台）</option>
+          <option value="haiku">最快最省</option>
+        </datalist>
+        <div className="hint">
+          可选官方档位别名（fable / opus / sonnet / haiku，自动解析为该档位最新型号），也可手填完整模型 ID；留空=跟随 CLI 默认。
+          任务干重活建议强模型；塔台常驻高频调用可低一档省 token。塔台模型保存后即回收会话生效（上下文保留）。
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={agentReview} onChange={(e) => setAgentReview(e.target.checked)} />
+          启用塔台自动审核 Issue
+        </label>
+        <div className="hint">开启后：Issue 产出 → 塔台先审，无阻碍且选项明确时自动通过继续实装；有真阻碍/选项不明确才 Slack 提醒人工。流程图会多一个「塔台审核」节点。</div>
         <div className="hint">并发数改动需重启后端生效；超时对新任务即时生效。</div>
       </section>
 
       <section id="sec-statusmap" className="card">
         <h3>JIRA 状态联动（status_map）</h3>
-        <div className="hint">任务进入某状态时，把工单流转到对应 JIRA 流转名；留空=不联动。</div>
+        <div className="hint">
+          任务进入某状态时，自动把工单流转过去（这是「自动联动」；候选票的状态胶囊是手动流转，两者互补）。
+          填「流转名」或「目标状态名」均可（如“待测试”）——胶囊点开看到的名字照抄即可。留空=不联动，手动管理。
+        </div>
         <table className="repo-table">
           <tbody>
             {STATE_ROWS.map(([k, label]) => (

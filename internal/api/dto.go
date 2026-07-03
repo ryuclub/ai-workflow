@@ -43,6 +43,7 @@ type ingestReq struct {
 	Status   string `json:"status"`  // start | ok | fail | info
 	Level    string `json:"level"`   // info | warn | error
 	Message  string `json:"message"` // 日志正文
+	RunGen   int    `json:"run_gen,omitempty"` // 运行代数（emit-event.sh 携带；与任务当前代数不符则丢弃）
 	IssueNum int    `json:"issue_num,omitempty"`
 	IssueURL string `json:"issue_url,omitempty"`
 	PRURL    string `json:"pr_url,omitempty"`
