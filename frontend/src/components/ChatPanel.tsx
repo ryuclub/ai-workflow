@@ -7,6 +7,7 @@ import {
   confirmAgentAction,
   denyAgentAction,
   getAgentMessages,
+  getAgentMessagesBefore,
   listAgentActions,
   listTasks,
   sendAgentMessage,
@@ -20,6 +21,7 @@ const KIND_LABEL: Record<string, string> = {
   wake: "系统事件",
   action_request: "待确认动作",
   action_result: "动作结局",
+  handover: "交接班",
 };
 
 const EV_KEY = "wf.chat.events";
@@ -74,6 +76,7 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
         if (closed) return;
         const msgs = d.messages || [];
         setMessages(msgs);
+        if (msgs.length < 60) setHasMore(false);
         setEnabled(d.enabled);
         setModel((d as { model?: string }).model || "");
         lastIdRef.current = msgs.length ? msgs[msgs.length - 1].id : 0;
@@ -116,12 +119,43 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const lastMsgId = messages.length ? messages[messages.length - 1].id : 0;
+  const prevLastRef = useRef(0);
   useEffect(() => {
     const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, typing, events, showEvents]);
+    if (!el) return;
+    // 只有尾部出现新消息/打字/事件才滚底；向上翻页 prepend 时保持原位。
+    if (lastMsgId !== prevLastRef.current || typing || events.length) {
+      if (lastMsgId >= prevLastRef.current) el.scrollTop = el.scrollHeight;
+      prevLastRef.current = lastMsgId;
+    }
+  }, [lastMsgId, typing, events, showEvents]);
 
   const [sending, setSending] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // 向上翻页：取当前最早消息之前的 50 条，prepend 并保持滚动位置不跳。
+  const loadEarlier = async () => {
+    if (loadingMore || messages.length === 0) return;
+    setLoadingMore(true);
+    const el = bodyRef.current;
+    const prevH = el ? el.scrollHeight : 0;
+    try {
+      const d = await getAgentMessagesBefore(messages[0].id, 50);
+      const older = d.messages || [];
+      if (older.length < 50) setHasMore(false);
+      if (older.length) {
+        setMessages((prev) => [...older, ...prev]);
+        requestAnimationFrame(() => {
+          if (el) el.scrollTop += el.scrollHeight - prevH;
+        });
+      }
+    } catch { /* 下次再试 */ } finally {
+      setLoadingMore(false);
+    }
+  };
+
   const doSend = async () => {
     const content = input.trim();
     if (!content || sending) return;
@@ -216,19 +250,41 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
             任务失败时我也会主动在这里发通报。
           </div>
         )}
-        {timeline.map((it, i) =>
-          it.msg ? (
-            <ChatMsg
-              key={"m" + it.msg.id}
-              m={it.msg}
-              taskLabel={taskRef(it.msg.task_id)}
-              action={it.msg.action_id ? actions[it.msg.action_id] : undefined}
-              onDecide={decide}
-            />
-          ) : (
-            <EventLine key={"e" + it.ev!.id + "-" + i} e={it.ev!} taskLabel={taskRef(it.ev!.task_id)} />
-          ),
+        {hasMore && messages.length > 0 && (
+          <button className="mini chat-more" disabled={loadingMore} onClick={loadEarlier}>
+            {loadingMore ? "加载中…" : "⬆ 加载更早"}
+          </button>
         )}
+        {groupByDay(timeline).map((g) => {
+          const rows = g.items.map((it, i) =>
+            it.msg ? (
+              <ChatMsg
+                key={"m" + it.msg.id}
+                m={it.msg}
+                taskLabel={taskRef(it.msg.task_id)}
+                action={it.msg.action_id ? actions[it.msg.action_id] : undefined}
+                onDecide={decide}
+              />
+            ) : (
+              <EventLine key={"e" + it.ev!.id + "-" + i} e={it.ev!} taskLabel={taskRef(it.ev!.task_id)} />
+            ),
+          );
+          if (g.today) {
+            return (
+              <div key={g.key}>
+                <div className="chat-day-sep">今天</div>
+                {rows}
+              </div>
+            );
+          }
+          // 往日默认折叠，点开即看（消息仍在内存，无需再请求）
+          return (
+            <details key={g.key} className="chat-day">
+              <summary>{g.label} · {g.items.length} 条</summary>
+              {rows}
+            </details>
+          );
+        })}
         {typing && (
           <div className="chat-msg assistant">
             <div className="chat-meta">塔台 · 输入中…</div>
@@ -259,6 +315,30 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
       </div>
     </div>
   );
+}
+
+// groupByDay 把合并时间线按自然日分组：今天平铺展示，往日折叠。
+function groupByDay(
+  timeline: Array<{ t: number; msg?: AgentMessage; ev?: EventMsg }>,
+): Array<{ key: string; label: string; today: boolean; items: typeof timeline }> {
+  const todayKey = new Date().toDateString();
+  const groups: Array<{ key: string; label: string; today: boolean; items: typeof timeline }> = [];
+  for (const it of timeline) {
+    const d = new Date(it.t);
+    const key = isNaN(d.getTime()) ? todayKey : d.toDateString();
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) {
+      last.items.push(it);
+    } else {
+      groups.push({
+        key,
+        label: `${d.getMonth() + 1}月${d.getDate()}日`,
+        today: key === todayKey,
+        items: [it],
+      });
+    }
+  }
+  return groups;
 }
 
 // EventLine 是时间线中的一条任务级事件（醒目色条式）。
@@ -329,7 +409,12 @@ function ChatMsg({
   action?: AgentAction;
   onDecide: (id: number, ok: boolean) => void;
 }) {
-  const who = m.role === "assistant" ? "塔台" : m.role === "user" ? "我方成员" : KIND_LABEL[m.kind] || "系统";
+  const who =
+    m.role === "assistant"
+      ? "塔台"
+      : m.role === "user"
+        ? (m.user_email ? m.user_email.split("@")[0] : "我方成员")
+        : KIND_LABEL[m.kind] || "系统";
   const cls = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : "system";
   const ts = new Date(m.created_at);
   const tsText = isNaN(ts.getTime()) ? "" : ts.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });

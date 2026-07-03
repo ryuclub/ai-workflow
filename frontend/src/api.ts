@@ -358,6 +358,7 @@ export interface AgentMessage {
   kind: string; // chat / wake / action_request / action_result
   content: string;
   user_id?: string;
+  user_email?: string;
   action_id?: number;
   task_id?: string; // 关联任务（唤醒/动作类消息），按任务过滤用
   created_at: string;
@@ -375,6 +376,8 @@ export interface AgentAction {
 }
 export const getAgentMessages = (since = 0) =>
   get(`/api/v1/agent/messages?since=${since}`).then(j<{ messages: AgentMessage[] | null; enabled: boolean }>);
+export const getAgentMessagesBefore = (before: number, limit = 50) =>
+  get(`/api/v1/agent/messages?before=${before}&limit=${limit}`).then(j<{ messages: AgentMessage[] | null }>);
 export const sendAgentMessage = (content: string, taskId?: string) =>
   send("POST", "/api/v1/agent/messages", { content, task_id: taskId || "" }).then(j<{ message: AgentMessage }>);
 export const listAgentActions = (status?: string) =>

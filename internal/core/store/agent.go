@@ -12,7 +12,8 @@ type AgentMessage struct {
 	Role      string    `json:"role"` // user / assistant / system
 	Kind      string    `json:"kind"` // chat / wake / action_request / action_result
 	Content   string    `json:"content"`
-	UserID    string    `json:"user_id,omitempty"`   // role=user 时的发言人
+	UserID    string    `json:"user_id,omitempty"`    // role=user 时的发言人
+	UserEmail string    `json:"user_email,omitempty"` // 发言人邮箱（读取时 JOIN users 填充，不落库）
 	ActionID  int64     `json:"action_id,omitempty"` // kind=action_request 时关联的待确认动作
 	TaskID    string    `json:"task_id,omitempty"`   // 关联任务（可确定归属的消息：唤醒/动作类），按任务过滤视图用
 	CreatedAt time.Time `json:"created_at"`
@@ -44,10 +45,18 @@ type AgentAction struct {
 // AgentStore 是调度 Agent 的持久化接口，由 *SQLite 实现。
 type AgentStore interface {
 	// 会话映射：租户 ↔ claude session id（进程重启后 --resume 找回上下文）。
-	GetAgentSession(tenantID string) (string, error)
+	// GetAgentSession 同时返回该映射的落库时间（交接班判据：会话年龄）。
+	GetAgentSession(tenantID string) (string, time.Time, error)
 	PutAgentSession(tenantID, claudeSessionID string) error
 
 	AppendAgentMessage(m *AgentMessage) error
+	// CountAgentMessagesSince 统计某时刻后的消息数（交接班判据：会话消息量）。
+	CountAgentMessagesSince(tenantID string, t time.Time) (int, error)
+	// ListAgentMessagesBefore 取 id < before 的最近 limit 条（聊天窗向上翻页）。
+	ListAgentMessagesBefore(tenantID string, beforeID int64, limit int) ([]*AgentMessage, error)
+	// AgentHandoverEpoch 返回当前班次起点：最近一条 kind=handover 消息的时间；
+	// 从未交接过则为首条消息时间；无消息返回零值。
+	AgentHandoverEpoch(tenantID string) (time.Time, error)
 	ListAgentMessages(tenantID string, sinceID int64, limit int) ([]*AgentMessage, error)
 
 	CreateAgentAction(a *AgentAction) error
@@ -63,13 +72,32 @@ type AgentStore interface {
 	MaxEventID() (int64, error)
 }
 
-func (s *SQLite) GetAgentSession(tenantID string) (string, error) {
+func (s *SQLite) GetAgentSession(tenantID string) (string, time.Time, error) {
 	var id string
-	err := s.db.QueryRow(`SELECT claude_session_id FROM agent_sessions WHERE tenant_id=?`, tenantID).Scan(&id)
+	var at time.Time
+	err := s.db.QueryRow(`SELECT claude_session_id, updated_at FROM agent_sessions WHERE tenant_id=?`, tenantID).Scan(&id, &at)
 	if err == sql.ErrNoRows {
-		return "", nil
+		return "", time.Time{}, nil
 	}
-	return id, err
+	return id, at, err
+}
+
+func (s *SQLite) AgentHandoverEpoch(tenantID string) (time.Time, error) {
+	var at time.Time
+	err := s.db.QueryRow(`SELECT created_at FROM agent_messages WHERE tenant_id=? AND kind='handover' ORDER BY id DESC LIMIT 1`, tenantID).Scan(&at)
+	if err == sql.ErrNoRows {
+		err = s.db.QueryRow(`SELECT created_at FROM agent_messages WHERE tenant_id=? ORDER BY id LIMIT 1`, tenantID).Scan(&at)
+		if err == sql.ErrNoRows {
+			return time.Time{}, nil
+		}
+	}
+	return at, err
+}
+
+func (s *SQLite) CountAgentMessagesSince(tenantID string, t time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_messages WHERE tenant_id=? AND created_at>?`, tenantID, t).Scan(&n)
+	return n, err
 }
 
 func (s *SQLite) PutAgentSession(tenantID, claudeSessionID string) error {
@@ -98,31 +126,50 @@ func (s *SQLite) AppendAgentMessage(m *AgentMessage) error {
 	return nil
 }
 
+// agentMsgCols 读消息时 LEFT JOIN users 填发言人邮箱（气泡显示是谁说的）。
+const agentMsgCols = `m.id,m.tenant_id,m.role,m.kind,m.content,m.user_id,m.action_id,m.task_id,m.created_at,IFNULL(u.email,'')`
+
+func scanAgentMsgs(rows *sql.Rows) ([]*AgentMessage, error) {
+	defer rows.Close()
+	var out []*AgentMessage
+	for rows.Next() {
+		var m AgentMessage
+		if err := rows.Scan(&m.ID, &m.TenantID, &m.Role, &m.Kind, &m.Content, &m.UserID, &m.ActionID, &m.TaskID, &m.CreatedAt, &m.UserEmail); err != nil {
+			return nil, err
+		}
+		out = append(out, &m)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLite) ListAgentMessages(tenantID string, sinceID int64, limit int) ([]*AgentMessage, error) {
-	q := `SELECT id,tenant_id,role,kind,content,user_id,action_id,task_id,created_at FROM agent_messages WHERE tenant_id=? AND id>? ORDER BY id`
+	q := `SELECT ` + agentMsgCols + ` FROM agent_messages m LEFT JOIN users u ON u.id=m.user_id WHERE m.tenant_id=? AND m.id>? ORDER BY m.id`
 	args := []any{tenantID, sinceID}
 	if limit > 0 {
 		// 取「最近 limit 条」而非「最早 limit 条」：首屏加载要的是尾部历史。
-		q = `SELECT id,tenant_id,role,kind,content,user_id,action_id,task_id,created_at FROM (
-		       SELECT id,tenant_id,role,kind,content,user_id,action_id,task_id,created_at FROM agent_messages
-		       WHERE tenant_id=? AND id>? ORDER BY id DESC LIMIT ?
-		     ) ORDER BY id`
+		q = `SELECT ` + agentMsgCols + ` FROM (
+		       SELECT * FROM agent_messages WHERE tenant_id=? AND id>? ORDER BY id DESC LIMIT ?
+		     ) m LEFT JOIN users u ON u.id=m.user_id ORDER BY m.id`
 		args = append(args, limit)
 	}
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*AgentMessage
-	for rows.Next() {
-		var m AgentMessage
-		if err := rows.Scan(&m.ID, &m.TenantID, &m.Role, &m.Kind, &m.Content, &m.UserID, &m.ActionID, &m.TaskID, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, &m)
+	return scanAgentMsgs(rows)
+}
+
+func (s *SQLite) ListAgentMessagesBefore(tenantID string, beforeID int64, limit int) ([]*AgentMessage, error) {
+	if limit <= 0 {
+		limit = 50
 	}
-	return out, rows.Err()
+	rows, err := s.db.Query(`SELECT `+agentMsgCols+` FROM (
+	       SELECT * FROM agent_messages WHERE tenant_id=? AND id<? ORDER BY id DESC LIMIT ?
+	     ) m LEFT JOIN users u ON u.id=m.user_id ORDER BY m.id`, tenantID, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanAgentMsgs(rows)
 }
 
 func (s *SQLite) CreateAgentAction(a *AgentAction) error {

@@ -12,17 +12,25 @@ import (
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 )
 
-// GET /api/v1/agent/messages?since=<id>&limit=<n> — 聊天历史（增量/首屏尾部）。
+// GET /api/v1/agent/messages?since=<id>&limit=<n>&before=<id> — 聊天历史。
+// since=增量；before=向上翻页（取 id<before 的最近 limit 条）；首屏默认尾部 60 条。
 func (s *Server) agentMessages(c *gin.Context) {
 	since, _ := strconv.ParseInt(c.Query("since"), 10, 64)
+	before, _ := strconv.ParseInt(c.Query("before"), 10, 64)
 	limit := 0
 	if since == 0 {
-		limit = 200 // 首屏取尾部最近 200 条
+		limit = 60 // 首屏取尾部最近 60 条（更早的向上翻页懒加载）
 	}
 	if v := c.Query("limit"); v != "" {
 		limit, _ = strconv.Atoi(v)
 	}
-	msgs, err := s.st.ListAgentMessages(c.GetString(ctxTenantID), since, limit)
+	var msgs []*store.AgentMessage
+	var err error
+	if before > 0 {
+		msgs, err = s.st.ListAgentMessagesBefore(c.GetString(ctxTenantID), before, limit)
+	} else {
+		msgs, err = s.st.ListAgentMessages(c.GetString(ctxTenantID), since, limit)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

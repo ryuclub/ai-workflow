@@ -303,6 +303,22 @@ func (c *Config) AgentEnabled() bool { return c.get("AGENT_ENABLED", "true") != 
 // 默认开；多租户互不信任的部署可用 AGENT_GENERAL=false 收紧为纯 MCP 沙箱。
 func (c *Config) AgentGeneral() bool { return c.get("AGENT_GENERAL", "true") != "false" }
 
+// AgentHandoverH 是塔台交接班的班次时长上限（小时，默认 24）：超过则新开会话轻装上岗。
+func (c *Config) AgentHandoverH() int {
+	if n, err := strconv.Atoi(c.get("AGENT_HANDOVER_H", "24")); err == nil && n > 0 {
+		return n
+	}
+	return 24
+}
+
+// AgentHandoverMsgs 是塔台交接班的班次消息量上限（默认 300）：超过则新开会话。
+func (c *Config) AgentHandoverMsgs() int {
+	if n, err := strconv.Atoi(c.get("AGENT_HANDOVER_MSGS", "300")); err == nil && n > 0 {
+		return n
+	}
+	return 300
+}
+
 // AgentModel 是塔台会话模型：租户配置 > AGENT_MODEL 环境 > 空（CLI 默认）。
 func (c *Config) AgentModel() string {
 	if c.AgentModelC != "" {

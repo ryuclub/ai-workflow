@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,19 +119,87 @@ func (m *Manager) deliver(tenantID, taskID, content string, notice bool) error {
 }
 
 // ensure 取（或懒启动）该租户会话；同时确保空闲回收器已启动。
+// 交接班：班次（自上次交接起）超时长/消息量阈值时，不再 resume 旧上下文，
+// 而是带「交接摘要」新开会话——控制 token 成本与旧记忆干扰（上下文越滚越大、
+// 旧工具行为/旧结论会污染新判断）。
 func (m *Manager) ensure(tenantID string) (*session, error) {
 	m.reapOnce.Do(func() { go m.reapLoop() })
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if s := m.sessions[tenantID]; s != nil && s.alive() {
+	if s := m.sessions[tenantID]; s != nil && s.alive() && !m.shiftOver(tenantID) {
 		return s, nil
 	}
-	s, err := m.startSession(tenantID)
+	brief := ""
+	if m.shiftOver(tenantID) {
+		if s := m.sessions[tenantID]; s != nil {
+			s.stop()
+			delete(m.sessions, tenantID)
+		}
+		brief = m.buildBriefing(tenantID)
+		// 交接班标记消息：既是给团队看的分界线，也是下一班次的计时起点（epoch）。
+		_ = m.st.AppendAgentMessage(&store.AgentMessage{
+			TenantID: tenantID, Role: "system", Kind: "handover",
+			Content: "🔄 交接班：本班次会话已达阈值，塔台带交接摘要换新会话上岗（历史见上文）。",
+		})
+		m.notifyChat(tenantID, ChatSignal{})
+	}
+	s, err := m.startSession(tenantID, brief)
 	if err != nil {
 		return nil, err
 	}
 	m.sessions[tenantID] = s
 	return s, nil
+}
+
+// shiftOver 判断当前班次是否到点（自上次交接/首条消息起，超时长或超消息量）。
+func (m *Manager) shiftOver(tenantID string) bool {
+	epoch, err := m.st.AgentHandoverEpoch(tenantID)
+	if err != nil || epoch.IsZero() {
+		return false
+	}
+	cfg := m.env.Config(tenantID)
+	if time.Since(epoch) > time.Duration(cfg.AgentHandoverH())*time.Hour {
+		return true
+	}
+	n, _ := m.st.CountAgentMessagesSince(tenantID, epoch)
+	return n > cfg.AgentHandoverMsgs()
+}
+
+// buildBriefing 从数据侧生成交接摘要（不依赖旧会话）：在办任务、待确认动作、近期对话摘录。
+func (m *Manager) buildBriefing(tenantID string) string {
+	var b strings.Builder
+	b.WriteString("## 交接摘要（上一班次）\n")
+	if tasks, err := m.st.ListTasksByTenant(tenantID); err == nil {
+		b.WriteString("在办任务：\n")
+		n := 0
+		for _, t := range tasks {
+			if t.State.Terminal() {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s %s [%s]\n", taskRef(t), t.Title, t.State)
+			n++
+		}
+		if n == 0 {
+			b.WriteString("- （无）\n")
+		}
+	}
+	if acts, err := m.st.ListAgentActions(tenantID, store.ActionPending); err == nil && len(acts) > 0 {
+		b.WriteString("待人确认的动作：\n")
+		for _, a := range acts {
+			fmt.Fprintf(&b, "- #%d %s：%s\n", a.ID, a.Tool, a.Summary)
+		}
+	}
+	if msgs, err := m.st.ListAgentMessages(tenantID, 0, 8); err == nil && len(msgs) > 0 {
+		b.WriteString("近期对话摘录（最新 8 条）：\n")
+		for _, mm := range msgs {
+			c := mm.Content
+			if len(c) > 160 {
+				c = c[:160] + "…"
+			}
+			fmt.Fprintf(&b, "- [%s] %s\n", mm.Role, strings.ReplaceAll(c, "\n", " "))
+		}
+	}
+	return b.String()
 }
 
 // reapLoop 定期回收空闲会话（会话 id 已持久化，下次 resume 找回上下文）。

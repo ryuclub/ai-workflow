@@ -38,8 +38,9 @@ func (s *session) currentTask() string {
 	return v
 }
 
-// startSession 拉起 claude 子进程。有持久化会话 id 则 --resume 找回上下文。
-func (m *Manager) startSession(tenantID string) (*session, error) {
+// startSession 拉起 claude 子进程。brief 为空且有持久化会话 id 则 --resume 找回上下文；
+// brief 非空表示交接班：放弃旧上下文新开会话，交接摘要并入系统提示（不占对话回合）。
+func (m *Manager) startSession(tenantID, brief string) (*session, error) {
 	cfg := m.env.Config(tenantID)
 	dir := cfg.AgentDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -56,7 +57,7 @@ func (m *Manager) startSession(tenantID string) (*session, error) {
 		"--mcp-config", m.mcpConfigJSON(tenantID),
 		"--allowedTools", "mcp__wf",
 		"--dangerously-skip-permissions",
-		"--system-prompt", systemPrompt,
+		"--system-prompt", systemPrompt + briefSuffix(brief),
 	}
 	// 通用能力（默认开）：保留 claude 内建工具（Bash/Read/搜索/联网…），塔台≈本地终端会话，
 	// 流水线操作仍走 wf MCP 工具（服务端白名单/确认流）。AGENT_GENERAL=false 回到纯 MCP 沙箱
@@ -67,7 +68,7 @@ func (m *Manager) startSession(tenantID string) (*session, error) {
 	if mdl := cfg.AgentModel(); mdl != "" {
 		args = append(args, "--model", mdl)
 	}
-	if sid, _ := m.st.GetAgentSession(tenantID); sid != "" {
+	if sid, _, _ := m.st.GetAgentSession(tenantID); sid != "" && brief == "" {
 		args = append(args, "--resume", sid)
 	} else {
 		args = append(args, "--session-id", uuid.NewString())
@@ -289,4 +290,12 @@ func trim(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// briefSuffix 把交接摘要拼进系统提示（空则不拼）。
+func briefSuffix(brief string) string {
+	if brief == "" {
+		return ""
+	}
+	return "\n\n" + brief
 }
