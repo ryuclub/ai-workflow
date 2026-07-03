@@ -369,6 +369,15 @@ func (o *Orchestrator) runC(ctx context.Context, t *store.Task) {
 	}
 	// 重载：拾取 C 阶段经 /internal 事件写入的 PRURL。
 	t = o.reload(t)
+	if t.State.Terminal() {
+		return // skill 已显式声明结局（skip/fail），不覆盖（与 runB/runD 一致）
+	}
+	// C 退出 0 但完全没产出 PR（skill 遇阻/自我拒绝/对齐失败）→ 待裁决，
+	// 不能走 enterPRReview 的「解析不到 PR 号直接完成」兜底而误判为完成。
+	if t.PRNum == 0 && t.PRURL == "" {
+		o.fail(t, pipeline.NodePR, "C 完成但未产出 PR（可能实装受阻或自我拒绝，见 C 日志）")
+		return
+	}
 	// C 出 PR → 进入 PR 审查闸口（等人 review，可多轮修订），不再直接完成。
 	o.enterPRReview(t, "已出 PR，等待人工审查")
 }
