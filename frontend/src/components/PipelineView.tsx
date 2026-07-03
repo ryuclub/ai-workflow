@@ -60,10 +60,15 @@ export default function PipelineView({
   pipeline,
   runs,
   taskState,
+  actionable,
+  onNodeAction,
 }: {
   pipeline: Pipeline;
   runs: NodeRun[];
   taskState: string;
+  // actionable：可从图上直接操作的节点 → 操作名（如「从此重跑」「回到审核」）。
+  actionable?: Record<string, string>;
+  onNodeAction?: (nodeId: string) => void;
 }) {
   const stateById = useMemo(() => {
     const m: Record<string, string> = {};
@@ -105,36 +110,41 @@ export default function PipelineView({
           };
         }
 
-        // 普通步骤：描边风格，按运行态着色。
+        // 普通步骤：描边风格，按运行态着色。可操作节点带 ↻ 提示并可点击。
         const st = stateById[n.id] || "pending";
         const color = STATE_COLOR[st] || "#9aa0a6";
+        const action = actionable?.[n.id];
         return {
           id: n.id,
           position: pos,
           data: {
             label: (
-              <div style={{ textAlign: "center" }}>
+              <div style={{ textAlign: "center" }} title={action ? `点击：${action}` : undefined}>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>{n.name}</div>
                 <div style={{ fontSize: 10, color }}>
                   {n.kind === "gate" ? "⏸ " : ""}
                   {STATE_LABEL[st] || st}
                 </div>
+                {action && (
+                  <div style={{ fontSize: 10, color: "#f5a623", fontWeight: 600 }}>↻ {action}</div>
+                )}
               </div>
             ),
           },
           sourcePosition: srcPos(n.sourcePos),
           targetPosition: tgtPos(n.targetPos),
           style: {
-            border: `2px solid ${color}`,
+            border: `2px ${action ? "dashed #f5a623" : "solid " + color}`,
             borderRadius: 8,
             padding: 6,
             width: 150,
             background: st === "running" ? "#fff8e1" : "#fff",
             boxShadow: st === "running" ? `0 0 0 3px ${color}33` : "none",
+            cursor: action ? "pointer" : undefined,
           },
         };
       }),
-    [pipeline, stateById, taskState],
+    [pipeline, stateById, taskState, actionable],
   );
 
   const edges: Edge[] = useMemo(
@@ -163,6 +173,9 @@ export default function PipelineView({
         nodesDraggable
         nodesConnectable={false}
         proOptions={{ hideAttribution: true }}
+        onNodeClick={(_, node) => {
+          if (actionable?.[node.id]) onNodeAction?.(node.id);
+        }}
       >
         <Background />
         <Controls showInteractive={false} />

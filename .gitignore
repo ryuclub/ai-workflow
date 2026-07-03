@@ -41,3 +41,4 @@ nohup.out
 *.tsbuildinfo
 # 后端构建产物（本地跑用，不入库）
 /wf-server
+.claude/ai-workflow/uploads/

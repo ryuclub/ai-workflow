@@ -127,12 +127,71 @@ func (o *Orchestrator) Cancel(taskID string) error {
 	}
 	t.Error = "用户取消"
 	o.setState(t, store.StateCanceled)
-	o.publish(taskID, "", "task.canceled", "warn", "任务已取消")
+	o.publish(t, "", "task.canceled", "warn", "任务已取消")
 	return nil
 }
 
 // Pipeline 返回内置流水线定义（供 API 输出给前端画图）。
 func (o *Orchestrator) Pipeline() pipeline.Pipeline { return o.pl }
+
+// Restart 原地从指定段重跑同一任务（不开新任务）：B=重新调查建 Issue（既有 Issue 走 upsert）、
+// C=重新实装、D=重新按意见修订。仅限非运行中任务；C 需已有 Issue、D 需已有 PR。
+func (o *Orchestrator) Restart(taskID, stage string) error {
+	t, err := o.st.GetTask(taskID)
+	if err != nil || t == nil {
+		return fmt.Errorf("任务不存在: %s", taskID)
+	}
+	switch t.State {
+	case store.StateQueued, store.StateRunningB, store.StateRunningC, store.StateRunningD:
+		return fmt.Errorf("任务正在运行（%s），如需重跑请先取消", t.State)
+	}
+	stage = strings.ToUpper(strings.TrimSpace(stage))
+	var reset []string
+	var run func(context.Context, *store.Task)
+	switch stage {
+	case "B":
+		reset = o.pl.NodeIDs() // 从头来：全部节点复位
+		run = o.runB
+	case "C":
+		if t.IssueNum == 0 {
+			return fmt.Errorf("该任务尚无 Issue，不能从 C 重跑（可从 B 重跑）")
+		}
+		// 防绕过人审：C 的前提是「审核确实通过过」（review 节点 ok，如 C 段失败/中断的重跑）。
+		// 审核从未通过（等审核中/被打回）的任务从 C 重跑会跳过闸口，拒绝。
+		if !o.reviewPassed(t.ID) {
+			return fmt.Errorf("该任务的 Issue 审核尚未通过，从 C 重跑会绕过审核闸口；请先完成审核（或从 B 重跑）")
+		}
+		reset = []string{pipeline.NodeBlueprint, pipeline.NodeImplement, pipeline.NodeTest,
+			pipeline.NodePR, pipeline.NodePRReview, pipeline.NodeRevise}
+		run = o.runC
+	case "D":
+		if t.PRNum == 0 {
+			return fmt.Errorf("该任务尚无 PR，不能从 D 重跑")
+		}
+		reset = []string{pipeline.NodePRReview, pipeline.NodeRevise}
+		run = o.runD
+	default:
+		return fmt.Errorf("未知阶段 %q（可选 B / C / D）", stage)
+	}
+	// 清取消标记：曾被取消的任务重跑时会被 isCanceled 秒退，必须先清。
+	o.mu.Lock()
+	delete(o.canceled, taskID)
+	o.mu.Unlock()
+	for _, id := range reset {
+		_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: id, State: store.NodePending})
+	}
+	t.Error = ""
+	if stage == "D" {
+		// 现存 review 意见视为本轮要处理的对象；游标推进到当下防轮询重复触发。
+		t.ReviewCursor = time.Now().Format(time.RFC3339)
+	}
+	// 立即置排队态：UI 马上能看出「重跑已受理、在等并发槽」，而不是停留在旧终态。
+	o.setState(t, store.StateQueued)
+	o.bumpGen(t)
+	o.publish(t, "", "task.restarted", "info", "从 "+stage+" 段重跑（排队中）")
+	go run(o.register(t.ID), t)
+	return nil
+}
 
 // StartTask 校验入参、做幂等、创建任务并异步启动 B。sourceID 为活跃源的工单标识，title 为票标题快照。
 func (o *Orchestrator) StartTask(tenantID, createdBy, sourceID, repo, title, idem string) (*store.Task, error) {
@@ -173,7 +232,8 @@ func (o *Orchestrator) StartTask(tenantID, createdBy, sourceID, repo, title, ide
 	for _, id := range o.pl.NodeIDs() {
 		_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: id, State: store.NodePending})
 	}
-	o.publish(t.ID, "", "task.created", "info", fmt.Sprintf("任务创建：%s/%s → %s", t.Source, sourceID, repo))
+	o.publish(t, "", "task.created", "info", fmt.Sprintf("任务创建：%s/%s → %s", t.Source, sourceID, repo))
+	o.bumpGen(t)
 	go o.runB(o.register(t.ID), t)
 	return t, nil
 }
@@ -189,7 +249,11 @@ func (o *Orchestrator) runB(ctx context.Context, t *store.Task) {
 		return
 	}
 	o.setState(t, store.StateRunningB)
-	o.publish(t.ID, "", "task.running_b", "info", "开始：调查 → 建 Issue（B）")
+	// 立即点亮首节点：克隆仓/启动 claude 的准备期（可达数十秒）内流程图也有进度反馈，
+	// 不等 skill 上报第一个阶段事件。
+	startMark := time.Now()
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeReadJira, State: store.NodeRunning, StartedAt: &startMark})
+	o.publish(t, pipeline.NodeReadJira, "task.running_b", "info", "开始：调查 → 建 Issue（B）")
 	if err := o.runner.RunB(ctx, t); err != nil {
 		if o.isCanceled(t.ID) {
 			return // 已由 Cancel 置 canceled 态
@@ -208,10 +272,36 @@ func (o *Orchestrator) runB(ctx context.Context, t *store.Task) {
 			"B 完成但未产出 Issue，也未声明 skip/fail（检查 claude 是否登录、是否真正执行了 jira-to-issue）")
 		return
 	}
-	// B 结束 → 等人审。节点 review 置 waiting。
+	// B 结束 → 审核闸口。启用塔台自动审核的租户：塔台审核节点转运行中，
+	// watcher 会据 task.awaiting_review 事件唤醒塔台执行审核（Slack 提醒此时被抑制，
+	// 塔台判定需人工时经 EscalateReview 再发）；未启用：直接等人审。
+	now := time.Now()
+	if o.deps.Config(t.TenantID).AgentAutoReview() {
+		_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeAgentReview, State: store.NodeRunning, StartedAt: &now})
+		o.setState(t, store.StateAwaitingReview)
+		o.publish(t, pipeline.NodeAgentReview, "task.awaiting_review", "info", "B 完成，塔台审核中")
+		return
+	}
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeReview, State: store.NodeWaiting})
 	o.setState(t, store.StateAwaitingReview)
-	o.publish(t.ID, pipeline.NodeReview, "task.awaiting_review", "info", "B 完成，等待人工审核")
+	o.publish(t, pipeline.NodeReview, "task.awaiting_review", "info", "B 完成，等待人工审核")
+}
+
+// EscalateReview 由塔台在自动审核中判定「需人工介入」时调用：塔台审核节点收尾、
+// 人审节点转等待，并以 warn 事件发 Slack 提醒（自动审核模式下原始等审提醒被抑制）。
+func (o *Orchestrator) EscalateReview(taskID, reason string) error {
+	t, err := o.st.GetTask(taskID)
+	if err != nil || t == nil {
+		return fmt.Errorf("任务不存在: %s", taskID)
+	}
+	if t.State != store.StateAwaitingReview {
+		return fmt.Errorf("任务非等待审核态（当前 %s）", t.State)
+	}
+	mark := time.Now()
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeAgentReview, State: store.NodeOK, EndedAt: &mark})
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeReview, State: store.NodeWaiting})
+	o.publish(t, pipeline.NodeReview, "task.review_escalated", "warn", "塔台审核：需人工介入——"+reason)
+	return nil
 }
 
 // Approve 人审通过：切标签 → 启动 C。
@@ -230,8 +320,11 @@ func (o *Orchestrator) Approve(ctx context.Context, taskID string) error {
 		}
 	}
 	mark := time.Now()
+	// 塔台审核节点一并收尾（未启用自动审核的租户该节点不在图中，落库无副作用）。
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeAgentReview, State: store.NodeOK, EndedAt: &mark})
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeReview, State: store.NodeOK, EndedAt: &mark})
-	o.publish(t.ID, pipeline.NodeReview, "node.completed", "info", "人审通过")
+	o.publish(t, pipeline.NodeReview, "node.completed", "info", "审核通过")
+	o.bumpGen(t)
 	go o.runC(o.register(t.ID), t)
 	return nil
 }
@@ -248,7 +341,7 @@ func (o *Orchestrator) Reject(ctx context.Context, taskID, reason string) error 
 	t.Error = reason
 	o.setState(t, store.StateRejected)
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeReview, State: store.NodeFail})
-	o.publish(t.ID, pipeline.NodeReview, "task.rejected", "warn", "人审打回："+reason)
+	o.publish(t, pipeline.NodeReview, "task.rejected", "warn", "人审打回："+reason)
 	return nil
 }
 
@@ -263,7 +356,10 @@ func (o *Orchestrator) runC(ctx context.Context, t *store.Task) {
 		return
 	}
 	o.setState(t, store.StateRunningC)
-	o.publish(t.ID, "", "task.running_c", "info", "开始：实装 → 测试 → PR（C）")
+	// 同 runB：准备期即点亮首节点。
+	startMark := time.Now()
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeBlueprint, State: store.NodeRunning, StartedAt: &startMark})
+	o.publish(t, pipeline.NodeBlueprint, "task.running_c", "info", "开始：实装 → 测试 → PR（C）")
 	if err := o.runner.RunC(ctx, t); err != nil {
 		if o.isCanceled(t.ID) {
 			return
@@ -287,12 +383,12 @@ func (o *Orchestrator) enterPRReview(t *store.Task, msg string) {
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodePR, State: store.NodeOK, EndedAt: &mark})
 	if t.PRNum == 0 {
 		o.setState(t, store.StateDone)
-		o.publish(t.ID, pipeline.NodePR, "task.completed", "warn", "已出 PR，但未能解析 PR 号，跳过 PR 审查环节直接完成")
+		o.publish(t, pipeline.NodePR, "task.completed", "warn", "已出 PR，但未能解析 PR 号，跳过 PR 审查环节直接完成")
 		return
 	}
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodePRReview, State: store.NodeWaiting})
 	o.setState(t, store.StateAwaitingPRReview)
-	o.publish(t.ID, pipeline.NodePRReview, "task.awaiting_pr_review", "info", msg)
+	o.publish(t, pipeline.NodePRReview, "task.awaiting_pr_review", "info", msg)
 }
 
 // StartPoller 起后台轮询：周期性拉取处于 PR 审查态任务的 GitHub review 决议，
@@ -374,7 +470,7 @@ func (o *Orchestrator) completePRReview(t *store.Task, msg string) {
 	}
 	mark := time.Now()
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodePRReview, State: store.NodeOK, EndedAt: &mark})
-	o.publish(t.ID, pipeline.NodePRReview, "task.completed", "info", msg)
+	o.publish(t, pipeline.NodePRReview, "task.completed", "info", msg)
 }
 
 // startRevise 起一轮修订：校验轮次上限，CAS 抢占状态，记录游标+轮次，异步跑 D。
@@ -388,6 +484,7 @@ func (o *Orchestrator) startRevise(t *store.Task, cursor time.Time) {
 	}
 	t.ReviewCursor = cursor.Format(time.RFC3339)
 	t.ReviewRound++
+	t.RunGen++
 	_ = o.st.UpdateTask(t)
 	go o.runD(o.register(t.ID), t)
 }
@@ -404,7 +501,7 @@ func (o *Orchestrator) runD(ctx context.Context, t *store.Task) {
 	}
 	now := time.Now()
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeRevise, State: store.NodeRunning, StartedAt: &now})
-	o.publish(t.ID, pipeline.NodeRevise, "task.running_d", "info", fmt.Sprintf("按 review 意见修订 PR（第 %d 轮）", t.ReviewRound))
+	o.publish(t, pipeline.NodeRevise, "task.running_d", "info", fmt.Sprintf("按 review 意见修订 PR（第 %d 轮）", t.ReviewRound))
 	if err := o.runner.RunD(ctx, t); err != nil {
 		if o.isCanceled(t.ID) {
 			return
@@ -420,7 +517,7 @@ func (o *Orchestrator) runD(ctx context.Context, t *store.Task) {
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeRevise, State: store.NodeOK, EndedAt: &mark})
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodePRReview, State: store.NodeWaiting})
 	o.setState(t, store.StateAwaitingPRReview)
-	o.publish(t.ID, pipeline.NodePRReview, "task.awaiting_pr_review", "info", "修订已 push，等待再次审查")
+	o.publish(t, pipeline.NodePRReview, "task.awaiting_pr_review", "info", "修订已 push，等待再次审查")
 }
 
 // ApprovePR 人工在 Dashboard 确认 PR 已通过（兜底轮询延迟/仓库无 required review 时）。
@@ -451,6 +548,89 @@ func (o *Orchestrator) RequestRevise(ctx context.Context, taskID string) error {
 }
 
 // --- 内部小工具 ---
+
+// ResumeReview 把中断/待裁决的任务送回审核闸口：Issue 已产出时无需重跑 B，
+// 直接恢复「等待审核」状态（典型场景：等审前后被服务重启打断转了待裁决）。
+func (o *Orchestrator) ResumeReview(taskID string) error {
+	t, err := o.st.GetTask(taskID)
+	if err != nil || t == nil {
+		return fmt.Errorf("任务不存在: %s", taskID)
+	}
+	switch t.State {
+	case store.StateQueued, store.StateRunningB, store.StateRunningC, store.StateRunningD:
+		return fmt.Errorf("任务正在运行（%s）", t.State)
+	case store.StateAwaitingReview:
+		return fmt.Errorf("任务已在审核闸口")
+	}
+	if t.IssueNum == 0 {
+		return fmt.Errorf("该任务尚无 Issue，请从「读取 JIRA」重跑（B）")
+	}
+	o.mu.Lock()
+	delete(o.canceled, taskID)
+	o.mu.Unlock()
+	t.Error = ""
+	now := time.Now()
+	if o.deps.Config(t.TenantID).AgentAutoReview() {
+		_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeAgentReview, State: store.NodeRunning, StartedAt: &now})
+		o.setState(t, store.StateAwaitingReview)
+		o.publish(t, pipeline.NodeAgentReview, "task.awaiting_review", "info", "回到审核闸口，塔台审核中")
+		return nil
+	}
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodeReview, State: store.NodeWaiting})
+	o.setState(t, store.StateAwaitingReview)
+	o.publish(t, pipeline.NodeReview, "task.awaiting_review", "info", "回到审核闸口，等待人工审核")
+	return nil
+}
+
+// ResumePRReview 把中断的任务送回 PR 审查闸口：PR 已产出时无需重跑 D，
+// 直接恢复「等待 PR 审查」（轮询/人工按钮随后驱动通过或修订）。
+func (o *Orchestrator) ResumePRReview(taskID string) error {
+	t, err := o.st.GetTask(taskID)
+	if err != nil || t == nil {
+		return fmt.Errorf("任务不存在: %s", taskID)
+	}
+	switch t.State {
+	case store.StateQueued, store.StateRunningB, store.StateRunningC, store.StateRunningD:
+		return fmt.Errorf("任务正在运行（%s）", t.State)
+	case store.StateAwaitingPRReview:
+		return fmt.Errorf("任务已在 PR 审查闸口")
+	}
+	if t.PRNum == 0 {
+		return fmt.Errorf("该任务尚无 PR，无法回到 PR 审查（可重新实装）")
+	}
+	o.mu.Lock()
+	delete(o.canceled, taskID)
+	o.mu.Unlock()
+	t.Error = ""
+	// 游标推进到当下：闸口恢复前的历史 review 意见视为已认领，防轮询立即触发修订。
+	t.ReviewCursor = time.Now().Format(time.RFC3339)
+	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: pipeline.NodePRReview, State: store.NodeWaiting})
+	o.setState(t, store.StateAwaitingPRReview)
+	o.publish(t, pipeline.NodePRReview, "task.awaiting_pr_review", "info", "回到 PR 审查闸口")
+	return nil
+}
+
+// bumpGen 递增任务运行代数并落库：每启动一段 claude 调一次。
+// 回传事件带代数校验，旧代数（孤儿进程）的事件被丢弃——服务重启会遗孤正在跑的
+// claude 子进程，它们若继续回传会污染新一轮运行的节点状态。
+func (o *Orchestrator) bumpGen(t *store.Task) {
+	t.RunGen++
+	_ = o.st.UpdateTask(t)
+}
+
+// reviewPassed 判断该任务的 Issue 审核节点是否已通过（ok）。
+func (o *Orchestrator) reviewPassed(taskID string) bool {
+	runs, err := o.st.ListNodeRuns(taskID)
+	if err != nil {
+		return false
+	}
+	for _, nr := range runs {
+		if nr.NodeID == pipeline.NodeReview {
+			return nr.State == store.NodeOK
+		}
+	}
+	return false
+}
 
 // transition 在锁内做状态 CAS：仅当库内当前状态==from 才置 to。
 // 返回 true 表示本次抢占成功；成功时把 t 同步到最新库值（含 PRNum/游标等字段）。
@@ -509,7 +689,7 @@ func (o *Orchestrator) syncJira(tenantID, sourceID string, s store.TaskState) {
 	}
 	go func() {
 		if err := prov.Transition(context.Background(), sourceID, name); err != nil {
-			_ = o.bus.Publish(&store.Event{TaskID: "", Type: "source.transition_failed", Level: "warn",
+			_ = o.bus.Publish(&store.Event{TaskID: "", TenantID: tenantID, Type: "source.transition_failed", Level: "warn",
 				Message: fmt.Sprintf("%s → %q 流转失败：%v", sourceID, name, err)})
 		}
 	}()
@@ -523,7 +703,7 @@ func (o *Orchestrator) DeclareSkip(taskID, reason string) {
 	}
 	t.Error = reason
 	o.setState(t, store.StateSkipped)
-	o.publish(taskID, "", "task.skipped", "info", "判定无需处理："+reason)
+	o.publish(t, "", "task.skipped", "info", "判定无需处理："+reason)
 }
 
 // DeclareFail 由 skill 经事件声明「异常遇阻」→ 终态 待裁决。
@@ -539,11 +719,11 @@ func (o *Orchestrator) fail(t *store.Task, node, msg string) {
 	t.Error = msg
 	o.setState(t, store.StateAdjudication)
 	_ = o.st.UpsertNodeRun(&store.NodeRun{TaskID: t.ID, NodeID: node, State: store.NodeFail})
-	o.publish(t.ID, node, "task.failed", "error", msg+" → 待裁决")
+	o.publish(t, node, "task.failed", "error", msg+" → 待裁决")
 }
 
-func (o *Orchestrator) publish(taskID, node, typ, level, msg string) {
+func (o *Orchestrator) publish(t *store.Task, node, typ, level, msg string) {
 	_ = o.bus.Publish(&store.Event{
-		TaskID: taskID, NodeID: node, Type: typ, Level: level, Message: msg,
+		TaskID: t.ID, TenantID: t.TenantID, NodeID: node, Type: typ, Level: level, Message: msg,
 	})
 }

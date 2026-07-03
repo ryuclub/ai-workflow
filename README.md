@@ -1,4 +1,4 @@
-# AI 工作流流水线（控制面 + Dashboard）
+# PR 工厂（控制面 + Dashboard）
 
 把一张工单（JIRA / Linear）**自动**跑成 GitHub Issue → 人审 → 实装 → PR，并在 Dashboard 上**实时可视化**每个任务的流水线进度。多仓支持；人只在两端把关（审需求、合 PR）。
 

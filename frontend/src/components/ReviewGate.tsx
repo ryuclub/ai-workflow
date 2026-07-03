@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { approveTask, getIssue, rejectTask, saveIssue } from "../api";
+import { confirmDialog } from "./Dialog";
 import type { Issue } from "../types";
 
 // 人审闸口：就地渲染/编辑该任务的 GitHub Issue。
@@ -67,9 +68,10 @@ export default function ReviewGate({
   const ensureFresh = async (): Promise<boolean> => {
     const latest = await getIssue(taskId);
     if (issue && (latest.title !== issue.title || latest.body !== issue.body)) {
-      const useMine = confirm(
+      const useMine = await confirmDialog(
         "GitHub 上的 Issue 已被改动（可能你在 GitHub 直接改了）。\n\n" +
           "确定 = 用当前 Dashboard 版本覆盖；\n取消 = 放弃本次并加载 GitHub 最新版本。",
+        { confirmText: "用我的版本覆盖" },
       );
       if (!useMine) {
         setIssue(latest);

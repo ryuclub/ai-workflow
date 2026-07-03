@@ -109,4 +109,7 @@ export interface SettingsView {
   status_map: Record<string, string> | null;
   max_concurrent: number;
   task_timeout_min: number;
+  agent_auto_review: boolean;
+  task_model: string;
+  agent_model: string;
 }

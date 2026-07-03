@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -196,6 +197,56 @@ func (l *Linear) Transition(ctx context.Context, id, name string) error {
 	m := fmt.Sprintf(`mutation { issueUpdate(id: "%s", input: { stateId: "%s" }) { success } }`, node.ID, stateID)
 	_, err = l.postGraphQL(ctx, m)
 	return err
+}
+
+// Transitions 返回该票所在团队的全部工作流状态名（Linear 无工作流约束，任意可达）。
+func (l *Linear) Transitions(ctx context.Context, id string) ([]string, error) {
+	idx := strings.LastIndex(id, "-")
+	if idx < 0 {
+		return nil, fmt.Errorf("非法 Linear 标识: %q", id)
+	}
+	team, num := id[:idx], id[idx+1:]
+	q := fmt.Sprintf(`{ issues(first:1, filter:{ team:{key:{eq:"%s"}}, number:{eq:%s} }) {
+		nodes { state { name } team { states { nodes { name position type } } } }
+	} }`, team, num)
+	data, err := l.postGraphQL(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	var qr struct {
+		Issues struct {
+			Nodes []struct {
+				State struct {
+					Name string `json:"name"`
+				} `json:"state"`
+				Team struct {
+					States struct {
+						Nodes []struct {
+							Name     string  `json:"name"`
+							Position float64 `json:"position"`
+						} `json:"nodes"`
+					} `json:"states"`
+				} `json:"team"`
+			} `json:"nodes"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(data, &qr); err != nil {
+		return nil, fmt.Errorf("解析 Linear 工作流状态失败: %w", err)
+	}
+	if len(qr.Issues.Nodes) == 0 {
+		return nil, fmt.Errorf("Linear 工单不存在: %s", id)
+	}
+	node := qr.Issues.Nodes[0]
+	states := node.Team.States.Nodes
+	sort.Slice(states, func(i, j int) bool { return states[i].Position < states[j].Position })
+	out := make([]string, 0, len(states))
+	for _, st := range states {
+		if strings.EqualFold(st.Name, node.State.Name) {
+			continue // 当前状态不算"可流转目标"
+		}
+		out = append(out, st.Name)
+	}
+	return out, nil
 }
 
 func (l *Linear) Get(ctx context.Context, id string) (*Ticket, error) {

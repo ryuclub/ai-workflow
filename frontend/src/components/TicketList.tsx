@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { listRepos, listTickets, startTask } from "../api";
+import { getTicketTransitions, listRepos, listTickets, startTask, transitionTicket } from "../api";
 import type { Repo, Ticket } from "../types";
 
 // 进行中的任务状态（非终态）才挡住重开。
@@ -192,7 +192,15 @@ export default function TicketList({
               </span>
             </div>
             <div className="ticket-meta">
-              <span className="status">{tk.status}</span>
+              <TicketStatus
+                id={tk.id}
+                status={tk.status}
+                onChanged={(name) => {
+                  const next = tickets.map((t) => (t.id === tk.id ? { ...t, status: name } : t));
+                  setTickets(next);
+                  saveCache({ q: qRef.current, tickets: next, repos });
+                }}
+              />
               {tk.existing_task_id && isActive(tk.existing_task_state) ? (
                 // 进行中：挡住重开，给「查看」入口
                 <button className="mini link" onClick={() => onOpenTask(tk.existing_task_id!)}>
@@ -238,5 +246,95 @@ export default function TicketList({
         )}
       </div>
     </div>
+  );
+}
+
+// TicketStatus：可点开的状态胶囊——按需拉「当前可用流转」（JIRA 仅工作流合法项，
+// 部分状态不可直达是工作流约束；Linear 为团队状态集），选中即流转并就地更新。
+function TicketStatus({
+  id,
+  status,
+  onChanged,
+}: {
+  id: string;
+  status: string;
+  onChanged: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [opts, setOpts] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  // 菜单用 fixed 定位：脱离 .ticket-list 的 overflow 裁剪（票少时菜单会被容器底边挡住）。
+  const [menuPos, setMenuPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
+
+  // fixed 菜单不随容器滚动：滚动/缩放时直接收起，避免悬浮错位。
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (open) return setOpen(false);
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) {
+      // 底部空间不足（菜单最高 240 + 余量）→ 向上弹出
+      if (window.innerHeight - r.bottom < 280) {
+        setMenuPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
+      } else {
+        setMenuPos({ left: r.left, top: r.bottom + 4 });
+      }
+    }
+    setOpen(true);
+    setErr("");
+    if (opts === null) {
+      getTicketTransitions(id)
+        .then((d) => setOpts(d.transitions || []))
+        .catch((e) => setErr(String((e as Error).message || e)));
+    }
+  };
+
+  const pick = async (name: string) => {
+    setBusy(true);
+    setErr("");
+    try {
+      await transitionTicket(id, name);
+      onChanged(name);
+      setOpen(false);
+      setOpts(null); // 流转后可用项会变（JIRA 工作流），下次点开重新拉
+    } catch (e) {
+      setErr(String((e as Error).message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="status ticket-status">
+      <button ref={btnRef} className="status-pill" title="点击变更工单状态" onClick={toggle}>
+        {status} ▾
+      </button>
+      {open && menuPos && (
+        <span
+          className="restart-menu"
+          style={{ position: "fixed", left: menuPos.left, top: menuPos.top, bottom: menuPos.bottom, right: "auto" }}
+        >
+          {opts === null && !err && <span className="muted2">加载可用流转…</span>}
+          {err && <span className="muted2" style={{ color: "#c0392b" }}>{err}</span>}
+          {opts !== null && opts.length === 0 && !err && <span className="muted2">当前无可用流转</span>}
+          {(opts || []).map((n) => (
+            <button key={n} className="mini" disabled={busy} onClick={() => pick(n)}>
+              {n}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
   );
 }

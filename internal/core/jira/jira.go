@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 // IssueSummary 对应 `jira_api.py search` 的列表项。
@@ -61,7 +62,14 @@ func (c *Client) run(ctx context.Context, out any, args ...string) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("jira_api.py %v 失败: %v: %s", args, err, stderr.String())
+		detail := strings.TrimSpace(stderr.String())
+		if o := strings.TrimSpace(stdout.String()); o != "" { // 部分脚本错误历史上打在 stdout
+			if detail != "" {
+				detail += " | "
+			}
+			detail += o
+		}
+		return fmt.Errorf("jira_api.py %v 失败: %v: %s", args, err, tailStr(detail, 300))
 	}
 	if err := json.Unmarshal(stdout.Bytes(), out); err != nil {
 		return fmt.Errorf("解析 jira_api.py 输出失败: %v: %s", err, stdout.String())
@@ -91,4 +99,23 @@ func (c *Client) Get(ctx context.Context, key string) (*Issue, error) {
 func (c *Client) Transition(ctx context.Context, key, name string) error {
 	var out map[string]any
 	return c.run(ctx, &out, "transition", key, name)
+}
+
+// Transitions 返回该票当前可用的流转名（JIRA 工作流合法项）。
+func (c *Client) Transitions(ctx context.Context, key string) ([]string, error) {
+	var out struct {
+		Transitions []string `json:"transitions"`
+	}
+	if err := c.run(ctx, &out, "transitions", key); err != nil {
+		return nil, err
+	}
+	return out.Transitions, nil
+}
+
+// tailStr 取字符串尾部 n 字节（错误信息里最有用的一般在结尾）。
+func tailStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }

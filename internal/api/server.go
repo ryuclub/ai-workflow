@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ryuclub/ai-workflow/internal/core/agent"
 	"github.com/ryuclub/ai-workflow/internal/core/config"
 	"github.com/ryuclub/ai-workflow/internal/core/events"
 	"github.com/ryuclub/ai-workflow/internal/core/github"
 	"github.com/ryuclub/ai-workflow/internal/core/orchestrator"
+	"github.com/ryuclub/ai-workflow/internal/core/runner"
 	"github.com/ryuclub/ai-workflow/internal/core/secret"
 	"github.com/ryuclub/ai-workflow/internal/core/source"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
@@ -28,17 +30,21 @@ type Deps interface {
 // Server 持有 API 处理器所需的 core 依赖。
 type Server struct {
 	deps   Deps
-	st     store.Store
+	st     agent.Store // 任务/事件 + agent 三表（*store.SQLite 同时实现）
 	ids    store.IdentityStore
 	vault  *secret.Vault // 凭据保险箱；未配 MASTER_KEY 时为 nil
 	bus    *events.Bus
 	orch   *orchestrator.Orchestrator
+	mgr    *agent.Manager // M7 调度 Agent
+	live   *runner.Live   // 任务输出直播器
 	health *healthRegistry
 }
 
 // NewServer 组装依赖。deps 在每次取用时返回当前生效配置/票源/客户端。
-func NewServer(deps Deps, st store.Store, ids store.IdentityStore, vault *secret.Vault, bus *events.Bus, orch *orchestrator.Orchestrator) *Server {
-	return &Server{deps: deps, st: st, ids: ids, vault: vault, bus: bus, orch: orch, health: newHealthRegistry()}
+func NewServer(deps Deps, st agent.Store, ids store.IdentityStore, vault *secret.Vault, bus *events.Bus, orch *orchestrator.Orchestrator, mgr *agent.Manager, live *runner.Live) *Server {
+	s := &Server{deps: deps, st: st, ids: ids, vault: vault, bus: bus, orch: orch, mgr: mgr, live: live, health: newHealthRegistry()}
+	mgr.SetHealthFunc(s.tenantHealthSnapshot) // get_health 工具 → 健康面板缓存
+	return s
 }
 
 // cfg/src/gh 按当前会话租户解析。tid 从 requireAuth 注入的 ctx 取。
@@ -104,6 +110,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/pipeline", s.getPipeline)
 		v1.GET("/source", s.getSource)
 		v1.GET("/tickets", s.listTickets)
+		v1.GET("/tickets/:id/transitions", s.ticketTransitions)
+		v1.POST("/tickets/:id/transition", s.ticketTransition)
 		v1.POST("/tasks", s.startTask)
 		v1.GET("/tasks", s.listTasks)
 		v1.GET("/tasks/:id", s.getTask)
@@ -115,8 +123,27 @@ func (s *Server) Router() *gin.Engine {
 		v1.POST("/tasks/:id/approve-pr", s.approvePRTask)
 		v1.POST("/tasks/:id/request-revise", s.requestReviseTask)
 		v1.POST("/tasks/:id/cancel", s.cancelTask)
+		v1.POST("/tasks/:id/restart", s.restartTask)
+		v1.POST("/tasks/:id/resume-review", s.resumeReviewTask)
+		v1.POST("/tasks/:id/resume-pr-review", s.resumePRReviewTask)
+		v1.DELETE("/tasks/:id", s.deleteTask)
 		v1.GET("/tasks/:id/events", s.streamEvents)
 		v1.GET("/tasks/:id/logs", s.getTaskLogs)
+		v1.GET("/tasks/:id/output/stream", s.streamTaskOutput)
+		// 合流 SSE：一条连接承载 租户事件 + 塔台聊天 + 全部任务输出直播
+		// （浏览器同域 HTTP/1.1 限 6 连接，多条 SSE 会占满导致全面卡死）
+		v1.GET("/stream", s.streamHub)
+		// 租户级全局事件流（旧端点，保留兼容）
+		v1.GET("/events/stream", s.streamTenantEvents)
+		// M7 调度 Agent：聊天 + 待确认动作
+		v1.GET("/agent/messages", s.agentMessages)
+		v1.POST("/agent/messages", s.agentSend)
+		v1.POST("/agent/uploads", s.agentUpload)
+		v1.GET("/agent/uploads/:id", s.agentUploadGet)
+		v1.GET("/agent/stream", s.agentStream)
+		v1.GET("/agent/actions", s.agentActions)
+		v1.POST("/agent/actions/:id/confirm", s.agentConfirmAction)
+		v1.POST("/agent/actions/:id/deny", s.agentDenyAction)
 		// 健康面板
 		v1.GET("/health", s.getHealth)
 		v1.POST("/health/check", s.checkHealth)
@@ -135,6 +162,7 @@ func (s *Server) Router() *gin.Engine {
 	in := r.Group("/internal", s.requireInternalToken())
 	{
 		in.POST("/tasks/:id/event", s.ingestEvent)
+		in.POST("/mcp", s.handleMCP) // Agent 会话的 MCP 工具端点
 	}
 
 	s.mountFrontend(r)
@@ -161,6 +189,9 @@ func (s *Server) mountFrontend(r *gin.Engine) {
 	}
 	r.Static("/assets", filepath.Join(dist, "assets"))
 	r.NoRoute(func(c *gin.Context) {
+		// SPA 壳禁缓存：构建产物按内容哈希命名且旧文件会被删，壳一旦被缓存，
+		// 重新部署后就会引用已不存在的 JS——页面看似正常实则全哑（须硬刷新）。
+		c.Header("Cache-Control", "no-cache")
 		c.File(filepath.Join(dist, "index.html"))
 	})
 }
