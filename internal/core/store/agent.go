@@ -14,8 +14,8 @@ type AgentMessage struct {
 	Content   string    `json:"content"`
 	UserID    string    `json:"user_id,omitempty"`    // role=user 时的发言人
 	UserEmail string    `json:"user_email,omitempty"` // 发言人邮箱（读取时 JOIN users 填充，不落库）
-	ActionID  int64     `json:"action_id,omitempty"` // kind=action_request 时关联的待确认动作
-	TaskID    string    `json:"task_id,omitempty"`   // 关联任务（可确定归属的消息：唤醒/动作类），按任务过滤视图用
+	ActionID  int64     `json:"action_id,omitempty"`  // kind=action_request 时关联的待确认动作
+	TaskID    string    `json:"task_id,omitempty"`    // 关联任务（可确定归属的消息：唤醒/动作类），按任务过滤视图用
 	CreatedAt time.Time `json:"created_at"`
 }
 

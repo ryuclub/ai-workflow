@@ -3,13 +3,13 @@
 package jira
 
 import (
-	"strings"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 // IssueSummary 对应 `jira_api.py search` 的列表项。
