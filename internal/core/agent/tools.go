@@ -205,14 +205,14 @@ func (t *Tools) buildDefs() []*ToolDef {
 		},
 		{
 			Name:        "list_tickets",
-			Description: "列出票源（JIRA/Linear）候选工单；query 可为票号或标题关键词。",
+			Description: "列出票源（JIRA/Linear）候选工单，每行：票号 [状态] (经办人) 标题 | 标签 | URL。按人查票用经办人字段筛选。query 可为票号、标题关键词，JIRA 还支持原生 JQL 透传（含 = ~ AND ORDER BY 时原样执行）。",
 			Schema:      obj(map[string]any{"query": str("搜索词，可空=默认最近")}),
 			Run:         t.listTickets,
 		},
 		{
 			Name:        "get_ticket",
-			Description: "读某任务的原始工单全文（标题/状态/正文）——辅审 Issue 时用来对照需求。",
-			Schema:      obj(map[string]any{"task": str("任务引用")}, "task"),
+			Description: "读工单全文（标题/状态/经办人/正文）。传 task=任务引用 读该任务对应的票，或直接传 ticket=票号（如 PROJ-1234，无需先起任务）。",
+			Schema:      obj(map[string]any{"task": str("任务引用（与 ticket 二选一）"), "ticket": str("票号（与 task 二选一）")}),
 			Run:         t.getTicket,
 		},
 		{
@@ -412,13 +412,21 @@ func (t *Tools) listTickets(ctx context.Context, tenantID, _ string, args map[st
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	q, _ := args["query"].(string)
-	tickets, err := prov.List(cctx, q, 10)
+	tickets, err := prov.List(cctx, q, 20)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	for _, tc := range tickets {
-		fmt.Fprintf(&b, "%s [%s] %s\n", tc.ID, tc.Status, trim(tc.Title, 60))
+		who := tc.Assignee
+		if who == "" {
+			who = "未分配"
+		}
+		fmt.Fprintf(&b, "%s [%s] (%s) %s", tc.ID, tc.Status, who, trim(tc.Title, 80))
+		if len(tc.Labels) > 0 {
+			fmt.Fprintf(&b, " | %s", strings.Join(tc.Labels, ","))
+		}
+		fmt.Fprintf(&b, " | %s\n", tc.URL)
 	}
 	if b.Len() == 0 {
 		return "（无候选票）", nil
@@ -501,9 +509,14 @@ func (t *Tools) deleteTask(_ context.Context, tenantID, _ string, args map[strin
 }
 
 func (t *Tools) getTicket(ctx context.Context, tenantID, _ string, args map[string]any) (string, error) {
-	tk, err := t.findTask(tenantID, argStr(args, "task"))
-	if err != nil {
-		return "", err
+	// 两种寻址：直接票号（无需起过任务），或任务引用（读该任务对应的票）。
+	id := strings.TrimSpace(argStr(args, "ticket"))
+	if id == "" {
+		tk, err := t.findTask(tenantID, argStr(args, "task"))
+		if err != nil {
+			return "", fmt.Errorf("须传 ticket=票号 或 task=任务引用（%v）", err)
+		}
+		id = tk.SourceID
 	}
 	prov := t.m.env.Provider(tenantID)
 	if prov == nil {
@@ -511,12 +524,16 @@ func (t *Tools) getTicket(ctx context.Context, tenantID, _ string, args map[stri
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	tc, err := prov.Get(cctx, tk.SourceID)
+	tc, err := prov.Get(cctx, id)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("票号: %s\n标题: %s\n状态: %s\nURL: %s\n\n%s",
-		tc.ID, tc.Title, tc.Status, tc.URL, trim(tc.Body, 6000)), nil
+	who := tc.Assignee
+	if who == "" {
+		who = "未分配"
+	}
+	return fmt.Sprintf("票号: %s\n标题: %s\n状态: %s\n经办人: %s\nURL: %s\n\n%s",
+		tc.ID, tc.Title, tc.Status, who, tc.URL, trim(tc.Body, 6000)), nil
 }
 
 func (t *Tools) getIssueTool(ctx context.Context, tenantID, _ string, args map[string]any) (string, error) {

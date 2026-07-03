@@ -299,6 +299,10 @@ func (c *Config) ConfigPath() string { return filepath.Join(c.Root, "config.json
 // AgentEnabled 是调度 Agent 总开关（默认开）。
 func (c *Config) AgentEnabled() bool { return c.get("AGENT_ENABLED", "true") != "false" }
 
+// AgentGeneral 决定塔台是否保留 claude 内建工具（Bash/Read/联网等，≈本地终端会话）。
+// 默认开；多租户互不信任的部署可用 AGENT_GENERAL=false 收紧为纯 MCP 沙箱。
+func (c *Config) AgentGeneral() bool { return c.get("AGENT_GENERAL", "true") != "false" }
+
 // AgentModel 是塔台会话模型：租户配置 > AGENT_MODEL 环境 > 空（CLI 默认）。
 func (c *Config) AgentModel() string {
 	if c.AgentModelC != "" {

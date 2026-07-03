@@ -52,13 +52,17 @@ func (m *Manager) startSession(tenantID string) (*session, error) {
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--verbose",
-		// 内置工具全禁，只留控制面 MCP 工具；权限控制在工具服务端（白名单策略）做。
-		"--tools", "",
 		"--strict-mcp-config",
 		"--mcp-config", m.mcpConfigJSON(tenantID),
 		"--allowedTools", "mcp__wf",
 		"--dangerously-skip-permissions",
 		"--system-prompt", systemPrompt,
+	}
+	// 通用能力（默认开）：保留 claude 内建工具（Bash/Read/搜索/联网…），塔台≈本地终端会话，
+	// 流水线操作仍走 wf MCP 工具（服务端白名单/确认流）。AGENT_GENERAL=false 回到纯 MCP 沙箱
+	// （多租户共用宿主且互不信任时建议关闭：内建工具运行在控制面主机上）。
+	if !cfg.AgentGeneral() {
+		args = append(args, "--tools", "")
 	}
 	if mdl := cfg.AgentModel(); mdl != "" {
 		args = append(args, "--model", mdl)
