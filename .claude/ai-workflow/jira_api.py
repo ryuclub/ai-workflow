@@ -13,6 +13,7 @@ JIRA REST API CRUD 操作脚本
   update <ticket_key> <json_fields>             更新字段
   delete <ticket_key>                           删除工单
   transition <ticket_key> <transition_name>     状态变更
+  transitions <ticket_key>                      列出当前可用状态转换
   search <jql>                                  JQL 搜索
 
 环境变量（从 .env 文件读取）:
@@ -490,21 +491,31 @@ class JiraAPI:
         self._request("DELETE", f"/issue/{ticket_key}")
         return {"status": "deleted", "key": ticket_key}
 
+    def transitions(self, ticket_key: str) -> dict:
+        """列出当前可用的状态转换（工作流合法项）"""
+        data = self._request("GET", f"/issue/{ticket_key}/transitions")
+        return {"transitions": [t["name"] for t in data.get("transitions", [])]}
+
     def transition(self, ticket_key: str, transition_name: str) -> dict:
-        """变更工单状态"""
-        # 获取可用的状态转换
+        """变更工单状态。按「流转名」或「目标状态名」匹配（大小写不敏感）——
+        JIRA 工作流的流转名（如"开始测试"）常与目标状态名（如"待测试"）不同，两者都认。"""
         transitions = self._request("GET", f"/issue/{ticket_key}/transitions")
 
         target = None
         for t in transitions["transitions"]:
-            if t["name"].lower() == transition_name.lower():
+            to_name = (t.get("to") or {}).get("name", "")
+            if t["name"].lower() == transition_name.lower() or to_name.lower() == transition_name.lower():
                 target = t
                 break
 
         if not target:
-            available = [t["name"] for t in transitions["transitions"]]
-            print(f"Error: 未找到状态转换 '{transition_name}'")
-            print(f"可用的状态转换: {available}")
+            available = [
+                f"{t['name']}(→{(t.get('to') or {}).get('name', '?')})"
+                for t in transitions["transitions"]
+            ]
+            # 错误必须走 stderr：调用方（Go 控制面）只把 stderr 归入错误信息
+            print(f"Error: 未找到状态转换 '{transition_name}'", file=sys.stderr)
+            print(f"当前可用: {available}", file=sys.stderr)
             sys.exit(1)
 
         self._request("POST", f"/issue/{ticket_key}/transitions", {"transition": {"id": target["id"]}})
@@ -581,6 +592,13 @@ def main():
             print("用法: jira_api.py transition <工单key> <状态名称>")
             sys.exit(1)
         result = api.transition(sys.argv[2], sys.argv[3])
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    elif command == "transitions":
+        if len(sys.argv) < 3:
+            print("用法: jira_api.py transitions <工单key>")
+            sys.exit(1)
+        result = api.transitions(sys.argv[2])
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
     elif command == "search":

@@ -21,9 +21,9 @@ phase="$1"
 status="${2:-info}"
 message="${3:-}"
 
-payload=$(python3 - "$phase" "$status" "$message" "${WF_ISSUE_NUM:-}" "${WF_ISSUE_URL:-}" "${WF_PR_URL:-}" <<'PY'
+payload=$(python3 - "$phase" "$status" "$message" "${WF_ISSUE_NUM:-}" "${WF_ISSUE_URL:-}" "${WF_PR_URL:-}" "${WF_RUN_GEN:-}" <<'PY'
 import json, sys
-phase, status, msg, inum, iurl, pr = sys.argv[1:7]
+phase, status, msg, inum, iurl, pr, gen = sys.argv[1:8]
 d = {"phase": phase, "status": status, "message": msg}
 if inum:
     try:
@@ -34,6 +34,11 @@ if iurl:
     d["issue_url"] = iurl
 if pr:
     d["pr_url"] = pr
+if gen:  # 运行代数：控制面据此丢弃过期运行（孤儿进程）的事件
+    try:
+        d["run_gen"] = int(gen)
+    except ValueError:
+        pass
 print(json.dumps(d, ensure_ascii=False))
 PY
 )

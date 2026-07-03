@@ -90,6 +90,31 @@ func (c *Client) UpdateIssue(ctx context.Context, repo string, num int, title, b
 	return err
 }
 
+// PRView 读取 PR 的标题与正文（塔台审查 PR 用）。
+func (c *Client) PRView(ctx context.Context, repo string, num int) (title, body string, err error) {
+	out, err := c.run(ctx, "pr", "view", fmt.Sprint(num), "-R", repo, "--json", "title,body")
+	if err != nil {
+		return "", "", err
+	}
+	var v struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		return "", "", fmt.Errorf("解析 gh pr view 输出失败: %v", err)
+	}
+	return v.Title, v.Body, nil
+}
+
+// PRDiff 读取 PR 的完整 diff（塔台审查 PR 用；调用方自行截断）。
+func (c *Client) PRDiff(ctx context.Context, repo string, num int) (string, error) {
+	out, err := c.run(ctx, "pr", "diff", fmt.Sprint(num), "-R", repo)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // WhoAmI 返回当前 gh 认证的登录名（连接测试用）。
 func (c *Client) WhoAmI(ctx context.Context) (string, error) {
 	out, err := c.run(ctx, "api", "user", "--jq", ".login")

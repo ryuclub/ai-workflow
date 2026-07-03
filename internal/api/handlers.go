@@ -1,12 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/ryuclub/ai-workflow/internal/core/pipeline"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 	"github.com/gin-gonic/gin"
 )
@@ -18,7 +20,8 @@ func (s *Server) listRepos(c *gin.Context) {
 
 // GET /api/v1/pipeline — 内置流水线定义（供前端画节点图）。
 func (s *Server) getPipeline(c *gin.Context) {
-	c.JSON(http.StatusOK, s.orch.Pipeline())
+	// 按租户功能开关出图：启用塔台自动审核的租户多一个「塔台审核」节点。
+	c.JSON(http.StatusOK, pipeline.ForTenant(s.cfg(c).AgentAutoReview()))
 }
 
 // GET /api/v1/source — 活跃票源信息（前端据此适配）。
@@ -256,15 +259,94 @@ func (s *Server) cancelTask(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"ok": true})
 }
 
-// POST /internal/tasks/:id/event — skill 回传结构化阶段事件。
-func (s *Server) ingestEvent(c *gin.Context) {
+// POST /api/v1/tasks/:id/restart — 原地从指定段（B/C/D）重跑同一任务。
+func (s *Server) restartTask(c *gin.Context) {
 	t := s.mustTask(c)
 	if t == nil {
+		return
+	}
+	var req struct {
+		Stage string `json:"stage"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Stage == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 stage（B / C / D）"})
+		return
+	}
+	if err := s.orch.Restart(t.ID, req.Stage); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"ok": true})
+}
+
+// POST /api/v1/tasks/:id/resume-review — 中断任务回到审核闸口（Issue 已在，无需重跑 B）。
+func (s *Server) resumeReviewTask(c *gin.Context) {
+	t := s.mustTask(c)
+	if t == nil {
+		return
+	}
+	if err := s.orch.ResumeReview(t.ID); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"ok": true})
+}
+
+// POST /api/v1/tasks/:id/resume-pr-review — 中断任务回到 PR 审查闸口（PR 已在，无需重跑 D）。
+func (s *Server) resumePRReviewTask(c *gin.Context) {
+	t := s.mustTask(c)
+	if t == nil {
+		return
+	}
+	if err := s.orch.ResumePRReview(t.ID); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"ok": true})
+}
+
+// DELETE /api/v1/tasks/:id — 删除已结束的任务（连带节点/事件记录）。
+func (s *Server) deleteTask(c *gin.Context) {
+	t := s.mustTask(c)
+	if t == nil {
+		return
+	}
+	if !t.State.Terminal() {
+		c.JSON(http.StatusConflict, gin.H{"error": "任务尚未结束（" + string(t.State) + "），不能删除；可先取消"})
+		return
+	}
+	if err := s.st.DeleteTask(t.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// 以租户级事件通知列表刷新（不挂在已删任务上，避免事件随任务被清）。
+	_ = s.bus.Publish(&store.Event{TenantID: t.TenantID, Type: "task.deleted", Level: "info",
+		Message: fmt.Sprintf("任务 #%d（%s）已删除", t.Seq, t.SourceID)})
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// POST /internal/tasks/:id/event — skill 回传结构化阶段事件。
+// 注意：internal 路由没有登录会话（凭证是共享 token），不能走 mustTask 的
+// 会话租户校验——否则多租户任务一律 404、回传静默丢失。任务按 UUID 直查。
+func (s *Server) ingestEvent(c *gin.Context) {
+	t, err := s.st.GetTask(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if t == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
 		return
 	}
 	var req ingestReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// 运行代数防串：服务重启/取消会遗孤旧一代的 claude 进程，它们若继续回传
+	// 会污染新一轮运行的节点状态——代数不符的事件静默丢弃（202 防脚本重试）。
+	if t.RunGen > 0 && req.RunGen != t.RunGen {
+		c.JSON(http.StatusAccepted, gin.H{"ok": false, "stale": true})
 		return
 	}
 
@@ -302,7 +384,7 @@ func (s *Server) ingestEvent(c *gin.Context) {
 		level = "info"
 	}
 	_ = s.bus.Publish(&store.Event{
-		TaskID: t.ID, NodeID: node, Type: evType, Level: level, Message: req.Message,
+		TaskID: t.ID, TenantID: t.TenantID, NodeID: node, Type: evType, Level: level, Message: req.Message,
 	})
 
 	// 终局声明：skip=正常无需处理(已跳过)，fail=异常遇阻(待裁决)。

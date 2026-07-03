@@ -111,6 +111,37 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
   tenant_id TEXT PRIMARY KEY,
   json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  tenant_id TEXT PRIMARY KEY,
+  claude_session_id TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  user_id TEXT DEFAULT '',
+  action_id INTEGER DEFAULT 0,
+  task_id TEXT DEFAULT '',
+  created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_tenant ON agent_messages(tenant_id, id);
+CREATE TABLE IF NOT EXISTS agent_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  args_json TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result TEXT DEFAULT '',
+  decided_by TEXT DEFAULT '',
+  task_id TEXT DEFAULT '',
+  created_at TIMESTAMP NOT NULL,
+  decided_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_agent_actions_tenant ON agent_actions(tenant_id, status, id);
 `)
 	if err != nil {
 		return err
@@ -123,9 +154,16 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN review_cursor TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN tenant_id TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN created_by TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE tasks ADD COLUMN run_gen INTEGER DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN platform_admin INTEGER DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE events ADD COLUMN tenant_id TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE agent_messages ADD COLUMN task_id TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE agent_actions ADD COLUMN task_id TEXT DEFAULT ''`)
 	// tenant_id 索引须在列存在（含旧库 ALTER 补列）之后建。
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant_id, created_at)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id, id)`)
+	// 回填历史事件的租户（从所属任务反查；仅空值行）。
+	_, _ = s.db.Exec(`UPDATE events SET tenant_id=IFNULL((SELECT tenant_id FROM tasks WHERE tasks.id=events.task_id),'') WHERE tenant_id=''`)
 	// 回填历史任务的编号（仅 seq=0 的旧行，按 rowid 赋递增号）。
 	_, _ = s.db.Exec(`UPDATE tasks SET seq=rowid WHERE seq=0`)
 	return nil
@@ -138,23 +176,23 @@ func (s *SQLite) CreateTask(t *Task) error {
 	_ = s.db.QueryRow(`SELECT IFNULL(MAX(seq),0)+1 FROM tasks`).Scan(&seq)
 	t.Seq = int(seq)
 	_, err := s.db.Exec(
-		`INSERT INTO tasks(id,seq,tenant_id,created_by,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,idem_key,error,created_at,updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Seq, t.TenantID, t.CreatedBy, t.Source, t.SourceID, t.Title, t.Repo, t.PipelineID, t.State, t.IssueURL, t.IssueNum, t.PRURL, t.PRNum, t.ReviewRound, t.ReviewCursor, t.IdemKey, t.Error, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO tasks(id,seq,tenant_id,created_by,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,run_gen,idem_key,error,created_at,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Seq, t.TenantID, t.CreatedBy, t.Source, t.SourceID, t.Title, t.Repo, t.PipelineID, t.State, t.IssueURL, t.IssueNum, t.PRURL, t.PRNum, t.ReviewRound, t.ReviewCursor, t.RunGen, t.IdemKey, t.Error, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
 func scanTask(row interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
 	err := row.Scan(&t.ID, &t.Seq, &t.TenantID, &t.CreatedBy, &t.Source, &t.SourceID, &t.Title, &t.Repo, &t.PipelineID, &t.State,
-		&t.IssueURL, &t.IssueNum, &t.PRURL, &t.PRNum, &t.ReviewRound, &t.ReviewCursor, &t.IdemKey, &t.Error, &t.CreatedAt, &t.UpdatedAt)
+		&t.IssueURL, &t.IssueNum, &t.PRURL, &t.PRNum, &t.ReviewRound, &t.ReviewCursor, &t.RunGen, &t.IdemKey, &t.Error, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &t, nil
 }
 
-const taskCols = `id,seq,tenant_id,created_by,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,idem_key,error,created_at,updated_at`
+const taskCols = `id,seq,tenant_id,created_by,source,source_id,title,repo,pipeline_id,state,issue_url,issue_num,pr_url,pr_num,review_round,review_cursor,run_gen,idem_key,error,created_at,updated_at`
 
 func (s *SQLite) GetTask(id string) (*Task, error) {
 	row := s.db.QueryRow(`SELECT `+taskCols+` FROM tasks WHERE id=?`, id)
@@ -226,8 +264,22 @@ func (s *SQLite) UpdateTask(t *Task) error {
 	defer s.mu.Unlock()
 	t.UpdatedAt = time.Now()
 	_, err := s.db.Exec(
-		`UPDATE tasks SET state=?,issue_url=?,issue_num=?,pr_url=?,pr_num=?,review_round=?,review_cursor=?,error=?,updated_at=? WHERE id=?`,
-		t.State, t.IssueURL, t.IssueNum, t.PRURL, t.PRNum, t.ReviewRound, t.ReviewCursor, t.Error, t.UpdatedAt, t.ID)
+		`UPDATE tasks SET state=?,issue_url=?,issue_num=?,pr_url=?,pr_num=?,review_round=?,review_cursor=?,run_gen=?,error=?,updated_at=? WHERE id=?`,
+		t.State, t.IssueURL, t.IssueNum, t.PRURL, t.PRNum, t.ReviewRound, t.ReviewCursor, t.RunGen, t.Error, t.UpdatedAt, t.ID)
+	return err
+}
+
+// DeleteTask 删除任务及其节点运行/事件记录。
+func (s *SQLite) DeleteTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec(`DELETE FROM node_runs WHERE task_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM events WHERE task_id=?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM tasks WHERE id=?`, id)
 	return err
 }
 
@@ -262,8 +314,8 @@ func (s *SQLite) AppendEvent(ev *Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.Exec(
-		`INSERT INTO events(task_id,node_id,type,level,message,ts) VALUES(?,?,?,?,?,?)`,
-		ev.TaskID, ev.NodeID, ev.Type, ev.Level, ev.Message, ev.TS)
+		`INSERT INTO events(task_id,tenant_id,node_id,type,level,message,ts) VALUES(?,?,?,?,?,?,?)`,
+		ev.TaskID, ev.TenantID, ev.NodeID, ev.Type, ev.Level, ev.Message, ev.TS)
 	if err != nil {
 		return err
 	}
@@ -273,7 +325,7 @@ func (s *SQLite) AppendEvent(ev *Event) error {
 
 func (s *SQLite) ListEvents(taskID string, sinceID int64) ([]*Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id,task_id,node_id,type,level,message,ts FROM events WHERE task_id=? AND id>? ORDER BY id`,
+		`SELECT id,task_id,tenant_id,node_id,type,level,message,ts FROM events WHERE task_id=? AND id>? ORDER BY id`,
 		taskID, sinceID)
 	if err != nil {
 		return nil, err
@@ -282,7 +334,7 @@ func (s *SQLite) ListEvents(taskID string, sinceID int64) ([]*Event, error) {
 	var out []*Event
 	for rows.Next() {
 		var ev Event
-		if err := rows.Scan(&ev.ID, &ev.TaskID, &ev.NodeID, &ev.Type, &ev.Level, &ev.Message, &ev.TS); err != nil {
+		if err := rows.Scan(&ev.ID, &ev.TaskID, &ev.TenantID, &ev.NodeID, &ev.Type, &ev.Level, &ev.Message, &ev.TS); err != nil {
 			return nil, err
 		}
 		out = append(out, &ev)

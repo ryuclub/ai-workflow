@@ -17,16 +17,17 @@ type Sink interface {
 
 // Bus 串联 store、SSE 订阅者与 sink。
 type Bus struct {
-	st    store.Store
-	mu    sync.Mutex
-	subs  map[string]map[int]chan struct{} // taskID -> subID -> nudge
-	next  int
-	sinks []Sink
+	st         store.Store
+	mu         sync.Mutex
+	subs       map[string]map[int]chan struct{} // taskID -> subID -> nudge
+	tenantSubs map[string]map[int]chan struct{} // tenantID -> subID -> nudge（租户级全局订阅）
+	next       int
+	sinks      []Sink
 }
 
 // NewBus 构造事件总线。
 func NewBus(st store.Store, sinks ...Sink) *Bus {
-	return &Bus{st: st, subs: map[string]map[int]chan struct{}{}, sinks: sinks}
+	return &Bus{st: st, subs: map[string]map[int]chan struct{}{}, tenantSubs: map[string]map[int]chan struct{}{}, sinks: sinks}
 }
 
 // Publish 落库并广播一条事件。ev.TS 为空时填当前时间。
@@ -46,6 +47,20 @@ func (b *Bus) Publish(ev *store.Event) error {
 		select {
 		case ch <- struct{}{}:
 		default: // 已有未消费 nudge，跳过——订阅者会一次性拉齐
+		}
+	}
+	// 通知该租户的全局订阅者（Agent watcher / 全局视图）
+	for _, ch := range b.tenantSubs[ev.TenantID] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	// 跨租户全局订阅者（保留桶 "*"）
+	for _, ch := range b.tenantSubs[allTenants] {
+		select {
+		case ch <- struct{}{}:
+		default:
 		}
 	}
 	sinks := b.sinks
@@ -78,6 +93,43 @@ func (b *Bus) Unsubscribe(taskID string, id int) {
 		delete(m, id)
 		if len(m) == 0 {
 			delete(b.subs, taskID)
+		}
+	}
+}
+
+// SubscribeTenant 注册某租户的全局 nudge 通道（跨任务）。语义同 Subscribe：只提示「有新事件」，
+// 订阅者回 store 用 ListTenantEvents 拉齐。
+func (b *Bus) SubscribeTenant(tenantID string) (int, <-chan struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.next++
+	id := b.next
+	if b.tenantSubs[tenantID] == nil {
+		b.tenantSubs[tenantID] = map[int]chan struct{}{}
+	}
+	ch := make(chan struct{}, 1)
+	b.tenantSubs[tenantID][id] = ch
+	return id, ch
+}
+
+// SubscribeAll 注册跨租户全局 nudge 通道（Agent watcher 用）。以空 tenantID 桶承载：
+// Publish 对任意事件都会命中该桶。
+func (b *Bus) SubscribeAll() (int, <-chan struct{}) { return b.SubscribeTenant(allTenants) }
+
+// UnsubscribeAll 注销全局订阅。
+func (b *Bus) UnsubscribeAll(id int) { b.UnsubscribeTenant(allTenants, id) }
+
+// allTenants 是全局订阅的保留桶名（不与真实租户 id 冲突）。
+const allTenants = "*"
+
+// UnsubscribeTenant 注销租户级订阅。
+func (b *Bus) UnsubscribeTenant(tenantID string, id int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if m := b.tenantSubs[tenantID]; m != nil {
+		delete(m, id)
+		if len(m) == 0 {
+			delete(b.tenantSubs, tenantID)
 		}
 	}
 }

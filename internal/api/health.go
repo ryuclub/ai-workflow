@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ryuclub/ai-workflow/internal/core/secret"
+	"github.com/ryuclub/ai-workflow/internal/core/store"
 	"github.com/gin-gonic/gin"
 )
 
@@ -79,7 +80,13 @@ func (s *Server) probeGithub(ctx context.Context, h *healthState, tenantID, user
 	hasTenant := s.deps.Config(tenantID).GithubToken() != ""
 	hasUser := s.vault != nil && s.vault.HasUser(userID, secret.KeyGithubToken)
 	if !hasTenant && !hasUser {
-		h.set(healthCheck{"github", false, "未配置 GitHub token（公司或个人）"})
+		// 未配令牌 ≠ 不可用：单机模式下任务会回落宿主凭据（gh 登录态 / ssh config）。
+		// 实探宿主回落身份，能用就绿灯并如实标注来源。
+		if login, err := s.deps.Github(tenantID, userID).WhoAmI(ctx); err == nil && login != "" {
+			h.set(healthCheck{"github", true, "未配置 token，回落宿主凭据：" + login})
+			return
+		}
+		h.set(healthCheck{"github", false, "未配置 token，宿主亦无 gh 登录态"})
 		return
 	}
 	login, err := s.deps.Github(tenantID, userID).WhoAmI(ctx)
@@ -150,17 +157,20 @@ func dropEnv(env []string, keys ...string) []string {
 }
 
 // GET /api/v1/health — 返回当前用户缓存；过期则后台刷新 github/source（claude 不自动跑）。
+// 探测节流 2 分钟：健康不需要秒级粒度，且每次探测都真实敲 GitHub/票源。
+// 探测结果与上次不同（好↔坏）时发 health.changed 进租户事件流，前端事件驱动刷新。
 func (s *Server) getHealth(c *gin.Context) {
 	h := s.healthFor(c)
 	tenantID, userID := c.GetString(ctxTenantID), c.GetString(ctxUserID)
 	h.mu.Lock()
-	stale := time.Since(h.ts) > 30*time.Second && !h.running
+	stale := time.Since(h.ts) > 2*time.Minute && !h.running
 	if stale {
 		h.running = true
 		h.ts = time.Now()
 	}
 	h.mu.Unlock()
 	if stale {
+		before := healthKey(h.snapshot())
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
@@ -169,9 +179,27 @@ func (s *Server) getHealth(c *gin.Context) {
 			h.mu.Lock()
 			h.running = false
 			h.mu.Unlock()
+			if after := healthKey(h.snapshot()); after != before {
+				_ = s.bus.Publish(&store.Event{TenantID: tenantID, Type: "health.changed", Level: "info",
+					Message: "环境健康状态变化"})
+			}
 		}()
 	}
 	c.JSON(200, gin.H{"checks": h.snapshot()})
+}
+
+// healthKey 把探测结果压成可比较的指纹（仅项名+好坏；detail 文本抖动不算状态变化）。
+func healthKey(checks []healthCheck) string {
+	var b strings.Builder
+	for _, c := range checks {
+		b.WriteString(c.Name)
+		if c.OK {
+			b.WriteString(":1;")
+		} else {
+			b.WriteString(":0;")
+		}
+	}
+	return b.String()
 }
 
 // POST /api/v1/health/check — 全量探测（含 claude，较慢），同步返回。

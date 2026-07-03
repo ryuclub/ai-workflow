@@ -28,7 +28,7 @@ export default function Login({ onOk }: { onOk: () => void }) {
   return (
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
-        <h2>AI 工作流流水线</h2>
+        <h2>PR 工厂</h2>
         <p className="muted">请使用邮箱与密码登录</p>
         <input
           type="email"
