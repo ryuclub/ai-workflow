@@ -1,6 +1,8 @@
 package api
 
 import (
+	"os"
+	"path/filepath"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/ryuclub/ai-workflow/internal/core/store"
 )
 
@@ -43,7 +46,7 @@ func (s *Server) agentMessages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": msgs, "enabled": s.mgr.Enabled(c.GetString(ctxTenantID)), "model": model})
 }
 
-// POST /api/v1/agent/messages — 用户在聊天窗发言。
+// POST /api/v1/agent/messages — 用户在聊天窗发言（可带附件引用）。
 func (s *Server) agentSend(c *gin.Context) {
 	tenantID := c.GetString(ctxTenantID)
 	if !s.mgr.Enabled(tenantID) {
@@ -51,19 +54,93 @@ func (s *Server) agentSend(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Content string `json:"content"`
-		TaskID  string `json:"task_id"` // 任务过滤视图下发送：消息与塔台回复归属该任务
+		Content     string   `json:"content"`
+		TaskID      string   `json:"task_id"`     // 任务过滤视图下发送：消息与塔台回复归属该任务
+		Attachments []string `json:"attachments"` // 已上传附件 id 列表（agentUpload 返回）
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Content) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "content 不能为空"})
+	if err := c.ShouldBindJSON(&req); err != nil || (strings.TrimSpace(req.Content) == "" && len(req.Attachments) == 0) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content 与附件不能都为空"})
 		return
 	}
-	msg, err := s.mgr.Send(tenantID, c.GetString(ctxUserID), strings.TrimSpace(req.TaskID), strings.TrimSpace(req.Content))
+	content := strings.TrimSpace(req.Content)
+	// 附件：正文追加 wf-upload:// 标记（前端渲染成图片/链接）；
+	// 模型侧追加本地路径说明（塔台用 Read 工具查看，图片直接进视觉）。
+	var note strings.Builder
+	dir := s.cfg(c).UploadsDir()
+	for _, id := range req.Attachments {
+		id = filepath.Base(strings.TrimSpace(id)) // 防路径穿越
+		if id == "" || id == "." {
+			continue
+		}
+		abs := filepath.Join(dir, id)
+		if _, err := os.Stat(abs); err != nil {
+			continue // 未上传成功的引用直接忽略
+		}
+		if isImageName(id) {
+			content += "\n\n![" + id + "](wf-upload://" + id + ")"
+		} else {
+			content += "\n\n📎 [" + id + "](wf-upload://" + id + ")"
+		}
+		fmt.Fprintf(&note, "\n[用户上传了附件：%s —— 用 Read 工具查看（图片可直接看）]", abs)
+	}
+	msg, err := s.mgr.Send(tenantID, c.GetString(ctxUserID), strings.TrimSpace(req.TaskID), content, note.String())
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "message": msg})
 		return
 	}
 	c.JSON(http.StatusAccepted, gin.H{"message": msg})
+}
+
+// isImageName 按扩展名粗判是否图片（内联预览用）。
+func isImageName(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+		return true
+	}
+	return false
+}
+
+// POST /api/v1/agent/uploads — 聊天附件上传（multipart file 字段；上限 15MB）。
+func (s *Server) agentUpload(c *gin.Context) {
+	fh, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 file 字段"})
+		return
+	}
+	if fh.Size > 15<<20 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "附件超过 15MB 上限"})
+		return
+	}
+	dir := s.cfg(c).UploadsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// 文件名：短随机前缀 + 净化原名（保留扩展名以便类型判断/Read 识别）
+	name := strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', ' ':
+			return '_'
+		}
+		return r
+	}, filepath.Base(fh.Filename))
+	id := uuid.NewString()[:8] + "-" + name
+	if err := c.SaveUploadedFile(fh, filepath.Join(dir, id)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": id, "name": name, "size": fh.Size, "image": isImageName(id)})
+}
+
+// GET /api/v1/agent/uploads/:id — 取聊天附件（图片内联预览/文件下载）。
+func (s *Server) agentUploadGet(c *gin.Context) {
+	id := filepath.Base(c.Param("id")) // 防路径穿越
+	abs := filepath.Join(s.cfg(c).UploadsDir(), id)
+	if _, err := os.Stat(abs); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "附件不存在"})
+		return
+	}
+	c.File(abs)
 }
 
 // GET /api/v1/agent/stream — 租户级聊天 SSE：agent.message（落库消息，按游标拉齐）+ agent.delta（打字机增量）。

@@ -138,6 +138,8 @@ func (s *Server) Router() *gin.Engine {
 		// M7 调度 Agent：聊天 + 待确认动作
 		v1.GET("/agent/messages", s.agentMessages)
 		v1.POST("/agent/messages", s.agentSend)
+		v1.POST("/agent/uploads", s.agentUpload)
+		v1.GET("/agent/uploads/:id", s.agentUploadGet)
 		v1.GET("/agent/stream", s.agentStream)
 		v1.GET("/agent/actions", s.agentActions)
 		v1.POST("/agent/actions/:id/confirm", s.agentConfirmAction)

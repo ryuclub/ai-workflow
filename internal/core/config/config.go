@@ -303,6 +303,11 @@ func (c *Config) AgentEnabled() bool { return c.get("AGENT_ENABLED", "true") != 
 // 默认开；多租户互不信任的部署可用 AGENT_GENERAL=false 收紧为纯 MCP 沙箱。
 func (c *Config) AgentGeneral() bool { return c.get("AGENT_GENERAL", "true") != "false" }
 
+// UploadsDir 是聊天附件的落盘目录（按租户隔离）。
+func (c *Config) UploadsDir() string {
+	return c.tenantSub(c.get("UPLOADS_DIR", filepath.Join(c.Root, ".claude", "ai-workflow", "uploads")))
+}
+
 // AgentHandoverH 是塔台交接班的班次时长上限（小时，默认 24）：超过则新开会话轻装上岗。
 func (c *Config) AgentHandoverH() int {
 	if n, err := strconv.Atoi(c.get("AGENT_HANDOVER_H", "24")); err == nil && n > 0 {

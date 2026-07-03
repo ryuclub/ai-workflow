@@ -80,13 +80,14 @@ func (m *Manager) Enabled(tenantID string) bool { return m.env.Config(tenantID).
 
 // Send 处理用户在聊天窗的发言：落库 → 确保会话 → 写入 stdin。
 // taskID 非空表示该发言归属某任务（任务过滤视图下发送），塔台回复将继承该归属。
-func (m *Manager) Send(tenantID, userID, taskID, content string) (*store.AgentMessage, error) {
+// modelNote 是仅给模型看的补充（如附件的本地路径说明），不落聊天记录。
+func (m *Manager) Send(tenantID, userID, taskID, content, modelNote string) (*store.AgentMessage, error) {
 	msg := &store.AgentMessage{TenantID: tenantID, Role: "user", Kind: "chat", Content: content, UserID: userID, TaskID: taskID}
 	if err := m.st.AppendAgentMessage(msg); err != nil {
 		return nil, err
 	}
 	m.notifyChat(tenantID, ChatSignal{})
-	if err := m.deliver(tenantID, taskID, content, false); err != nil {
+	if err := m.deliver(tenantID, taskID, content+modelNote, false); err != nil {
 		m.appendSystem(tenantID, "chat", "Agent 会话启动失败："+err.Error())
 		return msg, err
 	}

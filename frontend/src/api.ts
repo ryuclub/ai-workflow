@@ -378,8 +378,33 @@ export const getAgentMessages = (since = 0) =>
   get(`/api/v1/agent/messages?since=${since}`).then(j<{ messages: AgentMessage[] | null; enabled: boolean }>);
 export const getAgentMessagesBefore = (before: number, limit = 50) =>
   get(`/api/v1/agent/messages?before=${before}&limit=${limit}`).then(j<{ messages: AgentMessage[] | null }>);
-export const sendAgentMessage = (content: string, taskId?: string) =>
-  send("POST", "/api/v1/agent/messages", { content, task_id: taskId || "" }).then(j<{ message: AgentMessage }>);
+export const sendAgentMessage = (content: string, taskId?: string, attachments?: string[]) =>
+  send("POST", "/api/v1/agent/messages", { content, task_id: taskId || "", attachments: attachments || [] }).then(
+    j<{ message: AgentMessage }>,
+  );
+
+// uploadAgentFile 上传聊天附件（剪贴板贴图/选文件/拖拽共用）。
+export async function uploadAgentFile(file: File): Promise<{ id: string; name: string; size: number; image: boolean }> {
+  const fd = new FormData();
+  fd.append("file", file, file.name || "clipboard.png");
+  const t = getToken();
+  const res = await fetch("/api/v1/agent/uploads", {
+    method: "POST",
+    headers: t ? { Authorization: `Bearer ${t}` } : {},
+    body: fd,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error || res.statusText);
+  }
+  return res.json();
+}
+
+// agentUploadURL 把附件 id 转成带鉴权的可访问地址（气泡内联图片/下载链接用）。
+export const agentUploadURL = (id: string) => {
+  const t = getToken();
+  return `/api/v1/agent/uploads/${encodeURIComponent(id)}${t ? `?token=${encodeURIComponent(t)}` : ""}`;
+};
 export const listAgentActions = (status?: string) =>
   get("/api/v1/agent/actions" + (status ? `?status=${status}` : "")).then(j<{ actions: AgentAction[] | null }>);
 export const confirmAgentAction = (id: number) =>

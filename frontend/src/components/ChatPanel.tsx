@@ -12,6 +12,8 @@ import {
   listTasks,
   sendAgentMessage,
   subscribeAgentStream,
+  uploadAgentFile,
+  agentUploadURL,
   subscribeTaskOutput,
   subscribeTenantEvents,
 } from "../api";
@@ -132,6 +134,32 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
   }, [lastMsgId, typing, events, showEvents]);
 
   const [sending, setSending] = useState(false);
+  const [atts, setAtts] = useState<Array<{ id: string; name: string; image: boolean }>>([]);
+  const [uploading, setUploading] = useState(0);
+
+  // 附件入口三合一：剪贴板贴图 / 📎 选文件 / 拖拽，统一走上传接口。
+  const addFiles = (files: Iterable<File>) => {
+    for (const f of files) {
+      setUploading((n) => n + 1);
+      uploadAgentFile(f)
+        .then((r) => setAtts((prev) => [...prev, { id: r.id, name: r.name, image: r.image }]))
+        .catch((e) => setErr("附件上传失败：" + (e instanceof Error ? e.message : String(e))))
+        .finally(() => setUploading((n) => n - 1));
+    }
+  };
+  const onPaste = (e: React.ClipboardEvent) => {
+    const files: File[] = [];
+    for (const it of e.clipboardData?.items || []) {
+      if (it.kind === "file") {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  };
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -158,14 +186,16 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
 
   const doSend = async () => {
     const content = input.trim();
-    if (!content || sending) return;
+    if ((!content && atts.length === 0) || sending || uploading > 0) return;
+    const sendAtts = atts.map((a) => a.id);
     setInput("");
+    setAtts([]);
     setErr("");
     setSending(true);
     try {
       // 即时回显：POST 返回的就是落库消息，直接上屏（hub 再推到时会被游标去重）。
       // 任务过滤视图下发送：消息（及塔台回复）归属该任务，过滤视图里可见完整对话。
-      const { message } = await sendAgentMessage(content, filter || undefined);
+      const { message } = await sendAgentMessage(content, filter || undefined, sendAtts);
       if (message && message.id > lastIdRef.current) {
         lastIdRef.current = message.id;
         setMessages((prev) => [...prev, message]);
@@ -295,13 +325,44 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
         )}
       </div>
       {err && <div className="err">{err}</div>}
-      <div className="chat-input">
+      {(atts.length > 0 || uploading > 0) && (
+        <div className="chat-atts">
+          {atts.map((a) => (
+            <span key={a.id} className="chat-att-chip" title={a.name}>
+              {a.image ? "🖼" : "📄"} {a.name.length > 24 ? a.name.slice(0, 24) + "…" : a.name}
+              <button className="chat-att-x" onClick={() => setAtts((prev) => prev.filter((x) => x.id !== a.id))}>×</button>
+            </span>
+          ))}
+          {uploading > 0 && <span className="muted2">上传中…</span>}
+        </div>
+      )}
+      <div
+        className="chat-input"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+        }}
+      >
+        <label className="chat-attach" title="发送图片/文件（也可直接 Ctrl+V 贴图或拖拽）">
+          📎
+          <input
+            type="file"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              if (e.target.files?.length) addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
         <textarea
           value={input}
-          placeholder={enabled ? "问现状 / 下指令…（Enter 发送，Shift+Enter 换行）" : "Agent 已停用"}
+          placeholder={enabled ? "问现状 / 下指令…（Enter 发送；可贴图/拖文件）" : "Agent 已停用"}
           disabled={!enabled}
           rows={2}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={onPaste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -309,7 +370,11 @@ export default function ChatPanel({ onNewMessage }: { onNewMessage?: () => void 
             }
           }}
         />
-        <button className="primary" disabled={!enabled || sending || !input.trim()} onClick={doSend}>
+        <button
+          className="primary"
+          disabled={!enabled || sending || uploading > 0 || (!input.trim() && atts.length === 0)}
+          onClick={doSend}
+        >
           {sending ? "…" : "发送"}
         </button>
       </div>
@@ -418,6 +483,8 @@ function ChatMsg({
   const cls = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : "system";
   const ts = new Date(m.created_at);
   const tsText = isNaN(ts.getTime()) ? "" : ts.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  // 附件标记转真实地址（渲染时才拼 token，避免令牌落库）
+  const content = m.content.replace(/wf-upload:\/\/([^)\s]+)/g, (_all, id: string) => agentUploadURL(id));
   return (
     <div className={"chat-msg " + cls}>
       <div className="chat-meta">
@@ -425,7 +492,7 @@ function ChatMsg({
         {taskLabel && <span className="badge" style={{ marginLeft: 6 }}>{taskLabel}</span>}
       </div>
       <div className="chat-bubble markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         {m.kind === "action_request" && action && (
           <div className="chat-action">
             {action.status === "pending" ? (
