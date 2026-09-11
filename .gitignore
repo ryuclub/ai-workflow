@@ -25,10 +25,6 @@ go.work
 *.swp
 nohup.out
 
-# /dev-test-gen 沙箱（多轮生成、对比漂移用）
-/test-sandbox/
-# /dev-test-gen CASE 级 audit 报告（本地保留，不入 git，详 dev-test-gen.md 硬约束 #14）
-*_report.md
 # Claude Code 本地个人配置（不入库）
 .claude/settings.local.json
 
