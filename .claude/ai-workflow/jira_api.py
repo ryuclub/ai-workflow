@@ -195,11 +195,14 @@ class JiraAPI:
         "缺陷": "10009",        # Bug
     }
 
-    # 默认字段值（示例，按你的 JIRA 实例调整；所有新建工单自动设置）
-    DEFAULT_TEAM_ID = ""  # 团队字段值（实例特有 UUID）
-    TEAM_FIELD = "customfield_1XXXX"
-    DEFAULT_SYSTEM = {"id": "10000"}  # 系统字段值（示例）
-    SYSTEM_FIELD = "customfield_1XXXX"
+    # 实例特有字段：默认全部关闭，需要时用环境变量开启（字段 ID 与取值均因实例而异）
+    TEAM_FIELD = os.getenv("JIRA_TEAM_FIELD", "")        # 形如 customfield_1XXXX
+    DEFAULT_TEAM_ID = os.getenv("JIRA_TEAM_ID", "")      # 团队字段值（实例特有 UUID）
+    SYSTEM_FIELD = os.getenv("JIRA_SYSTEM_FIELD", "")    # 形如 customfield_1XXXX
+    DEFAULT_SYSTEM = ({"id": os.environ["JIRA_SYSTEM_ID"]}
+                      if os.getenv("JIRA_SYSTEM_ID") else None)
+    # 修复版本：设置前缀后，自动取该前缀下最新的未发布版本；留空则不设 fixVersions
+    VERSION_PREFIX = os.getenv("JIRA_VERSION_PREFIX", "")
 
     def _resolve_duedate(self, duedate: Optional[str]) -> Optional[str]:
         """解析截止日期。未指定时返回 None（由调用方处理继承逻辑）"""
@@ -213,14 +216,16 @@ class JiraAPI:
             "remainingEstimate": f"{hours}h"
         }
 
-    def _get_latest_server_version(self) -> Optional[dict]:
-        """获取最新的未发布 Server 版本"""
+    def _get_latest_version(self) -> Optional[dict]:
+        """取 VERSION_PREFIX 前缀下最新的未发布版本；未配置前缀时返回 None"""
+        if not self.VERSION_PREFIX:
+            return None
         versions = self._request("GET", f"/project/{self.PROJECT_KEY}/versions")
-        server_versions = [
+        matched = [
             v for v in versions
-            if v["name"].startswith("Server") and not v.get("released", False)
+            if v["name"].startswith(self.VERSION_PREFIX) and not v.get("released", False)
         ]
-        return {"id": server_versions[-1]["id"]} if server_versions else None
+        return {"id": matched[-1]["id"]} if matched else None
 
     def create_task(self, summary: str, description: str = "",
                     estimate_hours: float = 0, duedate: str = None,
@@ -239,7 +244,7 @@ class JiraAPI:
             raise ValueError(f"不支持的工单类型 '{issue_type}'。可用: {list(self.ISSUE_TYPE_IDS.keys())}")
 
         adf_description = self._build_adf_description(description)
-        fix_version = self._get_latest_server_version()
+        fix_version = self._get_latest_version()
 
         data = {
             "fields": {
@@ -251,9 +256,9 @@ class JiraAPI:
             }
         }
         # 实例特有字段：仅在配置了值时附加（未配则由 JIRA 用项目默认）
-        if self.DEFAULT_TEAM_ID:
+        if self.TEAM_FIELD and self.DEFAULT_TEAM_ID:
             data["fields"][self.TEAM_FIELD] = self.DEFAULT_TEAM_ID
-        if self.DEFAULT_SYSTEM:
+        if self.SYSTEM_FIELD and self.DEFAULT_SYSTEM:
             data["fields"][self.SYSTEM_FIELD] = self.DEFAULT_SYSTEM
 
         if self.current_account_id:
@@ -331,15 +336,15 @@ class JiraAPI:
             }
         }
         # 实例特有字段：仅在配置了值时附加
-        if self.DEFAULT_TEAM_ID:
+        if self.TEAM_FIELD and self.DEFAULT_TEAM_ID:
             data["fields"][self.TEAM_FIELD] = self.DEFAULT_TEAM_ID
-        if self.DEFAULT_SYSTEM:
+        if self.SYSTEM_FIELD and self.DEFAULT_SYSTEM:
             data["fields"][self.SYSTEM_FIELD] = self.DEFAULT_SYSTEM
 
         if self.current_account_id:
             data["fields"]["assignee"] = {"accountId": self.current_account_id}
 
-        fix_version = self._get_latest_server_version()
+        fix_version = self._get_latest_version()
         if fix_version:
             data["fields"]["fixVersions"] = [fix_version]
 
