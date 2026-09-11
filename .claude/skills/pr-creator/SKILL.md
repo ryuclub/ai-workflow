@@ -87,7 +87,7 @@ user-invokable: true
 ### Step 4: 输出
 
 1. **提出 PR 标题方案**
-   - 根据分支名前缀确定 PR 标题前缀（变更类型定义参照 [branch.md](../../guidelines/branch.md)）
+   - 根据分支名前缀确定 PR 标题前缀（变更类型取目标仓约定，通常为 `feat|fix|hotfix|perf|refactor|chore|docs`）
    - 判断困难时向用户确认
 
 2. **展示推荐标签**
@@ -116,7 +116,7 @@ user-invokable: true
 ## 标签判定规则
 
 根据分支名前缀自动判定 PR 标签。
-变更类型与分支前缀的对应关系参照 [branch.md](../../guidelines/branch.md)。
+变更类型与分支前缀的对应关系以目标仓 `CLAUDE.md` / `.claude/guidelines/` 的规定为准；无规定时用 `feat|fix|hotfix|perf|refactor|chore|docs`。
 
 **标签映射**: 分支前缀 → PR 标签（feat→feature, fix→bugfix, hotfix→bugfix, perf→performance, 其余同名）
 

@@ -9,11 +9,9 @@
 
 ## 2. 怎么写代码
 
-- 分支 / commit：[`.claude/guidelines/branch.md`](./.claude/guidelines/branch.md)
-- 编码规约：[`.claude/guidelines/coding.md`](./.claude/guidelines/coding.md)
-- 工作流：[`.claude/guidelines/workflow.md`](./.claude/guidelines/workflow.md)
-- JIRA：[`.claude/guidelines/jira.md`](./.claude/guidelines/jira.md)
-- 提交前自审：[`.claude/guidelines/pre-commit-review.md`](./.claude/guidelines/pre-commit-review.md)
+- Go 1.26，`gofmt` 格式化；提交前至少 `go build ./...` 通过
+- 分支：`<feat|fix|chore|refactor|docs>/<简述>`，以 `origin/main` 为基点，经 PR 合回 `main`
+- commit / PR 一律中文；提交前自查 diff 不含调试代码、临时值与任何凭据
 
 ### 分层硬约束
 - `internal/core/` 是纯领域层，**禁止 import gin / 任何 web 依赖**；HTTP 只存在于 `internal/api/`。

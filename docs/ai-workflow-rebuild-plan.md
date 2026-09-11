@@ -110,9 +110,8 @@ workflow-demo/
 ### 删除清单（Channel-Service 相关，全清）
 
 `cmd/`、`design/`、`deploy/`、`Dockerfile`、`.dockerignore`、`ARCHITECTURE.md`、`go.mod`、`go.sum`、
-`.github/workflows/deploy.yml`、所有 `*.go`、频道专属的 `guidelines/directory-structure.md`、
-`guidelines/templates/swagger.md`、`guidelines/test-spec.md`、`skills/gin-api-docs/` 等只服务于
-频道 Go 服务的内容。`server.py`（旧 webhook 接收器）逻辑被 `runner.py` 吸收后删除。
+`.github/workflows/deploy.yml`、所有 `*.go`，以及只服务于原业务服务的规范文档与专用 skill。
+`server.py`（旧 webhook 接收器）逻辑被 `runner.py` 吸收后删除。
 
 ## 5. 数据模型（DAG-ready）
 
